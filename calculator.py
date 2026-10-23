@@ -6,14 +6,14 @@ import matplotlib.pyplot as plt
 import math
 
 class SetOfStates():
-    def __init__(self, numStates):
+    def __init__(self, numStates, fluid = "Water"):
         self.T = [None] * numStates
         self.P = [None] * numStates
         self.v = [None] * numStates
         self.h = [None] * numStates
         self.s = [None] * numStates
         self.X = [None] * numStates
-        self.fluid = ["Water"] * numStates
+        self.fluid = [fluid] * numStates
 
     def extend(self, otherState):
         self.T.extend(otherState.T)
@@ -83,37 +83,11 @@ class SetOfStates():
                 return False
         return True
 
-    def get_intermediate_points(self, a, b, numPoints = 100):
-        if self.v[a] != self.v[b]:
-            return self.polytropic_interpolation(a, b, numPoints)
+    def polytropic_interpolation(self, a, b, numPoints = 3):
+        # doesn't work well and currently not in use
+        # leaving here in case it becomes useflul later and I return to it
 
         
-        # I strongly suspect that my linear interpolation of entropy approach is very inaccurate. to revisit later.
-        # TS looks better with P interpolation, but still wrong
-        T = []
-        P = []
-        v = []
-        h = []
-        s = []
-        X = []
-        for h_loc in range(0, numPoints):
-            #s_loc = self.s[a] + h_loc * (self.s[b] - self.s[a]) / numPoints
-            P_loc = self.P[a] + h_loc * (self.P[b] - self.P[a]) / numPoints
-            h_loc = self.h[a] + h_loc * (self.h[b] - self.h[a]) / numPoints
-            #T.append(cp.PropsSI("T", "Hmass", h_loc, "Smass", s_loc, self.fluid[a]))
-            #P.append(cp.PropsSI("P", "Hmass", h_loc, "Smass", s_loc, self.fluid[a]))
-            h.append(h_loc)
-            #s.append(s_loc)
-            #x.append(cp.PropsSI("Q", "Hmass", h_loc, "Smass", s_loc, self.fluid[a]))
-            T.append(cp.PropsSI("T", "Hmass", h_loc, "P", P_loc, self.fluid[a]))
-            P.append(P_loc)
-            v.append(1 / cp.PropsSI("D", "Hmass", h_loc, "P", P_loc, self.fluid[a]))
-            s.append(cp.PropsSI("Smass", "Hmass", h_loc, "P", P_loc, self.fluid[a]))
-            X.append(cp.PropsSI("Q", "Hmass", h_loc, "P", P_loc, self.fluid[a]))
-
-        return T, P, h, s, X
-
-    def polytropic_interpolation(self, a, b, numPoints = 3):
         intermediates = SetOfStates(0)
         #if self.X[a] != self.X[b]:
         #    return intermediates
@@ -171,6 +145,7 @@ class SetOfStates():
 
 
 def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=100):
+    # for linearProperties use [most changed, constant when ideal]
     intermediates = SetOfStates(0)
     starts = [fromSet.get_property(fromI, symbol) for symbol in linearProperties]
     ends = [toSet.get_property(toI, symbol) for symbol in linearProperties]
@@ -214,16 +189,12 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
         knowns.append(["P", toSet.P[i]])
     if toSet.v[i] != None:
         knowns.append(["D", 1 / self.v[i]])
-    #if toSet.h[i] != None:
-    #    knowns.append(["Hmass", toSet.h[i]])
-    #if toSet.s[i] != None:
-    #    knowns.append(["Smass", toSet.s[i]])
     if toSet.X[i] != None:
         knowns.append(["Q", toSet.X[i]])
 
 
     if len(knowns) == 0:
-        print("Couldn't solve point", i+1, "in solve_point_inefficient")
+        print("Couldn't solve point", i, "in solve_point_inefficient")
         return
 
     h_isen = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], "S", fromSet.s[fromIndex], toSet.fluid[i])
@@ -237,8 +208,6 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
         toSet.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
     if toSet.v[i] == None:
         toSet.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
-    #if toSet.h[i] == None:
-    #    toSet.h[i] = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
     if toSet.s[i] == None:
         toSet.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
     if toSet.X[i] == None:
@@ -254,11 +223,11 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
 
 
 class Cycle: # should be valid for both rankine and brayton
-    def __init__(self, numComp=1, numTurb=1):
-        self.preCompStates = SetOfStates(numComp)
-        self.postCompStates = SetOfStates(numComp)
-        self.preTurbStates = SetOfStates(numTurb)
-        self.postTurbStates = SetOfStates(numTurb)
+    def __init__(self, numComp=1, numTurb=1, fluid = "Water"):
+        self.preCompStates = SetOfStates(numComp, fluid)
+        self.postCompStates = SetOfStates(numComp, fluid)
+        self.preTurbStates = SetOfStates(numTurb, fluid)
+        self.postTurbStates = SetOfStates(numTurb, fluid)
 
         self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
         
@@ -286,9 +255,9 @@ class Cycle: # should be valid for both rankine and brayton
                 h_isen = cp.PropsSI("Hmass", "P", self.postCompStates.P[i], "Smass", self.preCompStates.s[i])
                 self.compressorEfficiencies[turbNum] = (self.postCompStates.h[i] - self.preCompStates.h[i]) / (h_isen - self.preCompStates.h[i])
             elif self.preCompStates.point_is_solved(i):
-                solve_point_inefficient(self.postCompStates, i, self.preCompStates, i, self.compressorEfficiencies[i])
+                solve_point_inefficient(self.postCompStates, i, self.preCompStates, i, 1 / self.compressorEfficiencies[i])
             elif self.postCompStates.point_is_solved(i):
-                solve_point_inefficient(self.preCompStates, i, self.postCompStates, i, 1 / self.compressorEfficiencies[i])
+                solve_point_inefficient(self.preCompStates, i, self.postCompStates, i, self.compressorEfficiencies[i])
 
         for i in range(0, len(self.preTurbStates.T)):
             if self.preTurbStates.point_is_solved(i) and self.postTurbStates.point_is_solved(i):
@@ -300,7 +269,7 @@ class Cycle: # should be valid for both rankine and brayton
                 solve_point_inefficient(self.preTurbStates, i, self.postTurbStates, i, 1 / self.turbineEfficiencies[i])
 
 
-    def ts_diagram(self, ax=None, label = None):
+    def ts_diagram(self, ax=None, label=None, isRankine=False):
         allPoints = self.combined_states()
         
         if ax == None:
@@ -314,22 +283,13 @@ class Cycle: # should be valid for both rankine and brayton
             x.append(allPoints.s[i])
             y.append(allPoints.T[i])
 
-        ax.scatter(x, y, label)
+        ax.scatter(x, y, label=label)
 
         x = []
         y = []
-
-        #for i in range(0, len(allPoints.T) - 1):
-        #    inter = allPoints.get_intermediate_points(i, i+1)
-        #    x.extend(inter.s)
-        #    y.extend(inter.T)
-        #inter = allPoints.get_intermediate_points(-1, 0)
-        #x.extend(inter.s)
-        #y.extend(inter.T)
-
         
 
-        for i in range(0, len(self.preCompStates.T)):
+        for i in range(0, len(self.preCompStates.T)): # compressor
             inter = get_intermediate_points(self.preCompStates, i, self.postCompStates, i, ["h", "s"])
             x.extend(inter.s)
             y.extend(inter.T)
@@ -339,11 +299,12 @@ class Cycle: # should be valid for both rankine and brayton
                 x.extend(inter.s)
                 y.extend(inter.T)
 
+        # boiler / combustion chamber
         inter = get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["s", "P"])
         x.extend(inter.s)
         y.extend(inter.T)
         
-        for i in range(0, len(self.preTurbStates.T)):
+        for i in range(0, len(self.preTurbStates.T)): # turbine
             inter = get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"])
             x.extend(inter.s)
             y.extend(inter.T)
@@ -353,47 +314,48 @@ class Cycle: # should be valid for both rankine and brayton
                 x.extend(inter.s)
                 y.extend(inter.T)
 
+        # condenser
         inter = get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"])
         x.extend(inter.s)
         y.extend(inter.T)
         
 
         ax.plot(x, y)
-        ax.scatter(x, y, marker=".")
+        #ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
 
-        propertyPlot = PropertyPlot(self.postCompStates.fluid[0], 'TS', axis=ax, unit_system='SI')
-        propertyPlot.calc_isolines(CoolProp.iQ, num=2)
-        plt.close(propertyPlot.figure)
-        propertyPlot.draw()
+        if isRankine:
+            original_xlim = ax.get_xlim()
+            original_ylim = ax.get_ylim()
+            propertyPlot = PropertyPlot(self.postCompStates.fluid[0], 'TS', axis=ax, unit_system='SI')
+            propertyPlot.calc_isolines(CoolProp.iQ, num=2)
+            plt.close(propertyPlot.figure)
+            propertyPlot.draw()
+            ax.set_xlim(original_xlim)
+            ax.set_ylim(original_ylim)
+            ax.autoscale(True)
         
         if label != None:
             ax.legend()
         plt.show(block=False)
+        return ax
 
 
 
 
 testRankine = Cycle(1, 1)
-#testRankine.preCompStates.T = [298]
 testRankine.preCompStates.P = [8000]
 testRankine.preCompStates.X = [0]
 testRankine.postCompStates.P = [8000000]
 testRankine.preTurbStates.T = [600]
 testRankine.preTurbStates.P = [8000000]
 testRankine.postTurbStates.P = [8000]
-testRankine.turbineEfficiencies[0] = 0.7
+testRankine.turbineEfficiencies[0] = 1
 testRankine.compressorEfficiencies[0] = 0.7
 
 testRankine.solve()
 
 states = testRankine.combined_states()
-print(states.T)
-print(states.P)
-print(states.v)
-print(states.h)
-print(states.s)
-print(states.X)
-testRankine.ts_diagram()
+rankineTS = testRankine.ts_diagram(label="unmodified", isRankine=True)
 
 
 
@@ -406,17 +368,39 @@ testRankine.preTurbStates.T = [600, 600]
 testRankine.preTurbStates.P = [8000000, 4000000]
 testRankine.postTurbStates.P = [4000000, 8000]
 testRankine.turbineEfficiencies = [0.7, 0.7]
-testRankine.compressorEfficiencies = [1, 1]
 
 testRankine.solve()
 
 states = testRankine.combined_states()
-print(states.T)
-print(states.P)
-print(states.h)
-print(states.s)
-print(states.X)
-testRankine.ts_diagram()
+testRankine.ts_diagram(ax=rankineTS, label = "reheater and useless intercooler")
+
+
+testBrayton = Cycle(1, 1, "Air")
+testBrayton.preCompStates.P = [101325]
+testBrayton.postCompStates.P = [500000]
+testBrayton.preCompStates.T = [298]
+testBrayton.preTurbStates.T = [600]
+testBrayton.preTurbStates.P = [500000]
+testBrayton.postTurbStates.P = [101325]
+
+testBrayton.solve()
+braytonTS = testBrayton.ts_diagram(label="isentropic")
+
+
+testBrayton = Cycle(1, 1, "Air")
+testBrayton.preCompStates.P = [101325]
+testBrayton.postCompStates.P = [500000]
+testBrayton.preCompStates.T = [298]
+testBrayton.preTurbStates.T = [600]
+testBrayton.preTurbStates.P = [500000]
+testBrayton.postTurbStates.P = [101325]
+testBrayton.turbineEfficiencies = [0.7]
+testBrayton.compressorEfficiencies = [0.7]
+
+testBrayton.solve()
+testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor")
+
+
 
 
 
