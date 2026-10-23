@@ -228,11 +228,12 @@ class Cycle: # should be valid for both rankine and brayton
         self.postCompStates = SetOfStates(numComp, fluid)
         self.preTurbStates = SetOfStates(numTurb, fluid)
         self.postTurbStates = SetOfStates(numTurb, fluid)
-
-        self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
-        
         self.turbineEfficiencies = [1] * numTurb
         self.compressorEfficiencies = [1] * numComp
+
+        self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
+        self.intermediates = None
+        
 
     def combined_states(self):
         states = SetOfStates(0)
@@ -299,6 +300,29 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
+    def update_intermediates(self):
+        allPoints = self.combined_states()
+        self.intermediates = SetOfStates(0)
+        
+        for i in range(0, len(self.preCompStates.T)): # compressor
+            self.intermediates.extend(get_intermediate_points(self.preCompStates, i, self.postCompStates, i, ["h", "s"]))
+
+            if i+1 < len(self.preCompStates.T): # intercooling
+                self.intermediates.extend(get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["T", "P"]))
+
+        # boiler / combustion chamber
+        self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["s", "P"]))
+        
+        for i in range(0, len(self.preTurbStates.T)): # turbine
+            self.intermediates.extend(get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"]))
+
+            if i+1 < len(self.preTurbStates.T): # reheating
+                self.intermediates.extend(get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"]))
+        
+        # condenser
+        self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"]))
+
+    
     def ts_diagram(self, ax=None, label=None, isRankine=False):
         allPoints = self.combined_states()
         
@@ -315,41 +339,14 @@ class Cycle: # should be valid for both rankine and brayton
 
         ax.scatter(x, y, label=label)
 
-        x = []
-        y = []
         
-
-        for i in range(0, len(self.preCompStates.T)): # compressor
-            inter = get_intermediate_points(self.preCompStates, i, self.postCompStates, i, ["h", "s"])
-            x.extend(inter.s)
-            y.extend(inter.T)
-
-            if i+1 < len(self.preCompStates.T): # intercooling
-                inter = get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["T", "P"])
-                x.extend(inter.s)
-                y.extend(inter.T)
-
-        # boiler / combustion chamber
-        inter = get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["s", "P"])
-        x.extend(inter.s)
-        y.extend(inter.T)
         
-        for i in range(0, len(self.preTurbStates.T)): # turbine
-            inter = get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"])
-            x.extend(inter.s)
-            y.extend(inter.T)
+        if self.intermediates == None:
+            self.update_intermediates()
 
-            if i+1 < len(self.preTurbStates.T): # reheating
-                inter = get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"])
-                x.extend(inter.s)
-                y.extend(inter.T)
-
-        # condenser
-        inter = get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"])
-        x.extend(inter.s)
-        y.extend(inter.T)
+        x = self.intermediates.s
+        y = self.intermediates.T
         
-
         ax.plot(x, y)
         #ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
 
@@ -363,6 +360,49 @@ class Cycle: # should be valid for both rankine and brayton
             ax.set_xlim(original_xlim)
             ax.set_ylim(original_ylim)
             ax.autoscale(True)
+        
+        if label != None:
+            ax.legend()
+        plt.show(block=False)
+        return ax
+    
+    def pv_diagram(self, ax=None, label=None, isRankine=False):
+        allPoints = self.combined_states()
+        
+        if ax == None:
+            ax = plt.figure().add_subplot()
+            ax.set_xlabel("v - $m^3 kg^{-1}$")
+            ax.set_ylabel("P - $Pa$")
+
+        x = []
+        y = []
+        for i in range(0, len(allPoints.T)):
+            x.append(allPoints.v[i])
+            y.append(allPoints.P[i])
+
+        ax.scatter(x, y, label=label)
+
+        
+        
+        if self.intermediates == None:
+            self.update_intermediates()
+
+        x = self.intermediates.v
+        y = self.intermediates.P
+        
+        ax.plot(x, y)
+        #ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
+
+        """if isRankine:
+            original_xlim = ax.get_xlim()
+            original_ylim = ax.get_ylim()
+            propertyPlot = PropertyPlot(self.postCompStates.fluid[0], 'PV', axis=ax, unit_system='SI')
+            propertyPlot.calc_isolines(CoolProp.iQ, num=2)
+            plt.close(propertyPlot.figure)
+            propertyPlot.draw()
+            ax.set_xlim(original_xlim)
+            ax.set_ylim(original_ylim)
+            ax.autoscale(True)"""
         
         if label != None:
             ax.legend()
@@ -385,8 +425,10 @@ testRankine.compressorEfficiencies[0] = 0.7
 testRankine.solve()
 print(testRankine.efficiency())
 rankineTS = testRankine.ts_diagram(label="unmodified", isRankine=True)
+rankinePV = testRankine.pv_diagram(label="unmodified", isRankine=True)
 
-rankineTS.set_title("Rankine Test Plot")
+rankineTS.set_title("Rankine Test Plot Ts")
+rankinePV.set_title("Rankine Test Plot Pv")
 
 testRankine = Cycle(1, 2)
 testRankine.preCompStates.P = [8000]
@@ -400,6 +442,7 @@ testRankine.turbineEfficiencies = [0.7, 0.7]
 testRankine.solve()
 print(testRankine.efficiency())
 testRankine.ts_diagram(ax=rankineTS, label = "reheater")
+testRankine.pv_diagram(ax=rankinePV, label = "reheater")
 
 
 testBrayton = Cycle(1, 1, "Air")
@@ -412,9 +455,11 @@ testBrayton.postTurbStates.P = [101325]
 
 testBrayton.solve()
 braytonTS = testBrayton.ts_diagram(label="isentropic")
+braytonPV = testBrayton.pv_diagram(label="isentropic")
 print(testBrayton.efficiency())
 
-braytonTS.set_title("Brayton Test Plot")
+braytonTS.set_title("Brayton Test Plot Ts")
+braytonPV.set_title("Brayton Test Plot Pv")
 
 
 testBrayton = Cycle(1, 1, "Air")
@@ -430,6 +475,7 @@ testBrayton.compressorEfficiencies = [0.7]
 testBrayton.solve()
 print(testBrayton.efficiency())
 testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor")
+testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor")
 
 
 testBrayton = Cycle(2, 2, "Air")
@@ -445,6 +491,7 @@ testBrayton.compressorEfficiencies = [0.7, 0.7]
 testBrayton.solve()
 print(testBrayton.efficiency())
 testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor with intercooler and reheating")
+testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor with intercooler and reheating")
 
 
 
