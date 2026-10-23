@@ -254,6 +254,7 @@ class Cycle: # should be valid for both rankine and brayton
             if self.preCompStates.point_is_solved(i) and self.postCompStates.point_is_solved(i):
                 h_isen = cp.PropsSI("Hmass", "P", self.postCompStates.P[i], "Smass", self.preCompStates.s[i])
                 self.compressorEfficiencies[turbNum] = (self.postCompStates.h[i] - self.preCompStates.h[i]) / (h_isen - self.preCompStates.h[i])
+                print("Compressor efficiency overwritten")
             elif self.preCompStates.point_is_solved(i):
                 solve_point_inefficient(self.postCompStates, i, self.preCompStates, i, 1 / self.compressorEfficiencies[i])
             elif self.postCompStates.point_is_solved(i):
@@ -263,10 +264,39 @@ class Cycle: # should be valid for both rankine and brayton
             if self.preTurbStates.point_is_solved(i) and self.postTurbStates.point_is_solved(i):
                 h_isen = cp.PropsSI("Hmass", "P", self.postTurbStates.P[i], "Smass", self.preTurbStates.s[i])
                 self.turbineEfficiencies[turbNum] = (self.postTurbStates.h[i] - self.preTurbStates.h[i]) / (h_isen - self.preTurbStates.h[i])
+                print("Turbine efficiency overwritten")
             elif self.preTurbStates.point_is_solved(i):
                 solve_point_inefficient(self.postTurbStates, i, self.preTurbStates, i, self.turbineEfficiencies[i])
             elif self.postTurbStates.point_is_solved(i):
                 solve_point_inefficient(self.preTurbStates, i, self.postTurbStates, i, 1 / self.turbineEfficiencies[i])
+
+    def q_in(self):
+        q = abs(self.preTurbStates.h[0] - self.postCompStates.h[-1])
+        for i in range(1, len(self.preTurbStates.T)): # reheating q_in
+            q += abs(self.preTurbStates.h[i] - self.postTurbStates.h[i-1])
+        return q
+
+    def q_out(self):
+        q = abs(self.preCompStates.h[0] - self.postTurbStates.h[-1])
+        for i in range(1, len(self.preCompStates.T)): # intercooling q_out
+            q += abs(self.preCompStates.h[i] - self.postCompStates.h[i-1])
+        return q
+
+    def w_in(self):
+        w = 0
+        for i in range(0, len(self.preCompStates.T)):
+            w += abs(self.postCompStates.h[i] - self.preCompStates.h[i])
+        return w
+
+    def w_out(self):
+        w = 0
+        for i in range(0, len(self.preTurbStates.T)):
+            w += abs(self.postTurbStates.h[i] - self.preTurbStates.h[i])
+        return w
+
+    def efficiency(self):
+        return self.w_out() / (self.w_in() + self.q_in())
+
 
 
     def ts_diagram(self, ax=None, label=None, isRankine=False):
@@ -353,26 +383,23 @@ testRankine.turbineEfficiencies[0] = 1
 testRankine.compressorEfficiencies[0] = 0.7
 
 testRankine.solve()
-
-states = testRankine.combined_states()
+print(testRankine.efficiency())
 rankineTS = testRankine.ts_diagram(label="unmodified", isRankine=True)
 
+rankineTS.set_title("Rankine Test Plot")
 
-
-testRankine = Cycle(2, 2)
-testRankine.preCompStates.T = [None, 400]
-testRankine.preCompStates.P = [8000, 4000000]
-testRankine.preCompStates.X = [0, None]
-testRankine.postCompStates.P = [4000000, 8000000]
+testRankine = Cycle(1, 2)
+testRankine.preCompStates.P = [8000]
+testRankine.preCompStates.X = [0]
+testRankine.postCompStates.P = [8000000]
 testRankine.preTurbStates.T = [600, 600]
 testRankine.preTurbStates.P = [8000000, 4000000]
 testRankine.postTurbStates.P = [4000000, 8000]
 testRankine.turbineEfficiencies = [0.7, 0.7]
 
 testRankine.solve()
-
-states = testRankine.combined_states()
-testRankine.ts_diagram(ax=rankineTS, label = "reheater and useless intercooler")
+print(testRankine.efficiency())
+testRankine.ts_diagram(ax=rankineTS, label = "reheater")
 
 
 testBrayton = Cycle(1, 1, "Air")
@@ -385,6 +412,9 @@ testBrayton.postTurbStates.P = [101325]
 
 testBrayton.solve()
 braytonTS = testBrayton.ts_diagram(label="isentropic")
+print(testBrayton.efficiency())
+
+braytonTS.set_title("Brayton Test Plot")
 
 
 testBrayton = Cycle(1, 1, "Air")
@@ -398,7 +428,23 @@ testBrayton.turbineEfficiencies = [0.7]
 testBrayton.compressorEfficiencies = [0.7]
 
 testBrayton.solve()
+print(testBrayton.efficiency())
 testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor")
+
+
+testBrayton = Cycle(2, 2, "Air")
+testBrayton.preCompStates.P = [101325, 250000]
+testBrayton.postCompStates.P = [250000, 500000]
+testBrayton.preCompStates.T = [298, 298]
+testBrayton.preTurbStates.T = [600, 600]
+testBrayton.preTurbStates.P = [500000, 250000]
+testBrayton.postTurbStates.P = [250000, 101325]
+testBrayton.turbineEfficiencies = [0.7, 0.7]
+testBrayton.compressorEfficiencies = [0.7, 0.7]
+
+testBrayton.solve()
+print(testBrayton.efficiency())
+testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor with intercooler and reheating")
 
 
 
