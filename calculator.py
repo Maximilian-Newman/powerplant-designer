@@ -1,5 +1,7 @@
 import cea
 from CoolProp import CoolProp as cp # haha very funny
+from CoolProp.Plots import PropertyPlot
+import CoolProp
 import matplotlib.pyplot as plt
 import math
 
@@ -81,9 +83,9 @@ class SetOfStates():
                 return False
         return True
 
-    def get_intermediate_points(self, a, b, numPoints = 20):
-        #if self.v[a] != self.v[b]:
-        #    return self.polytropic_interpolation(a, b, numPoints)
+    def get_intermediate_points(self, a, b, numPoints = 100):
+        if self.v[a] != self.v[b]:
+            return self.polytropic_interpolation(a, b, numPoints)
 
         
         # I strongly suspect that my linear interpolation of entropy approach is very inaccurate. to revisit later.
@@ -111,24 +113,43 @@ class SetOfStates():
 
         return T, P, h, s, X
 
-    def polytropic_interpolation(self, a, b, numPoints = 20):
+    def polytropic_interpolation(self, a, b, numPoints = 3):
         intermediates = SetOfStates(0)
-        k = math.log(self.P[b] / self.P[a]) / math.log(self.v[a] / self.v[b])
+        #if self.X[a] != self.X[b]:
+        #    return intermediates
+        
+        k = math.log(self.P[a] / self.P[b]) / math.log(self.v[b] / self.v[a])
         c = self.P[a] + self.v[a] ** k
 
         print()
+        print(self.P[a], self.P[b])
+        print(self.v[a], self.v[b])
         print(k, c)
 
         for i in range(0, numPoints):
-            v = self.v[a] + (self.v[b] - self.v[a]) * i / numPoints
-            P = c / v**k
+            v = 0
+            P = 0
+
+            if k < 1:
+                v = self.v[a] + (self.v[b] - self.v[a]) * i / numPoints
+                P = c / v**k
+            else:
+                P = self.P[a] + (self.P[b] - self.P[a]) * i / numPoints
+                v = (P / c) ** (1/k)
+
+            print(P, "\t", v)
+            
             intermediates.T.append(None)
-            intermadiates.P.append(P)
+            intermediates.P.append(P)
             intermediates.v.append(v)
             intermediates.h.append(None)
             intermediates.s.append(None)
             intermediates.X.append(None)
-        intermediates.solve_points()
+            intermediates.fluid.append(self.fluid[a])
+        try:
+            intermediates.solve_points()
+        except:
+            return SetOfStates(0)
         return intermediates
 
     def get_property(self, i, symbol):
@@ -149,24 +170,35 @@ class SetOfStates():
 
 
 
-def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=20):
+def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=100):
     intermediates = SetOfStates(0)
     starts = [fromSet.get_property(fromI, symbol) for symbol in linearProperties]
     ends = [toSet.get_property(toI, symbol) for symbol in linearProperties]
+
+    for i in range(0, len(linearProperties)):
+        if linearProperties[i] == "h":
+            linearProperties[i] = "Hmass"
+        if linearProperties[i] == "s":
+            linearProperties[i] = "Smass"
+        if linearProperties[i] == "X":
+            linearProperties[i] = "Q"
+        if linearProperties[i] == "v":
+            linearProperties[i] = "D"
+    
     for i in range(0, numPoints):
         linValues = []
         for j in range(0, len(linearProperties)):
             val = starts[j] + (ends[j] - starts[j]) * i / numPoints
-            linValues.append(val)
-            if linearProperties[i] == "T":
-                intermediates.T.append(val)
+            if linearProperties[j] == "D":
+                linValues.append(1 / val)
+            else:
+                linValues.append(val)
         
-        if "T" not in linearProperties:
-            intermediates.T.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
+        intermediates.T.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
         intermediates.P.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
         intermediates.v.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
-        intermediates.h.append(cp.PropsSI("h", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
-        intermediates.s.append(cp.PropsSI("s", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
+        intermediates.h.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
+        intermediates.s.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
         intermediates.X.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
         intermediates.fluid.append(fromSet.fluid[fromI])
     return intermediates
@@ -295,32 +327,44 @@ class Cycle: # should be valid for both rankine and brayton
         #x.extend(inter.s)
         #y.extend(inter.T)
 
+        
+
         for i in range(0, len(self.preCompStates.T)):
-            inter = get_intermediate_points(self.preCompStates, i, self.postCompStates, i, ["h", "T"])
+            inter = get_intermediate_points(self.preCompStates, i, self.postCompStates, i, ["h", "s"])
             x.extend(inter.s)
             y.extend(inter.T)
 
             if i+1 < len(self.preCompStates.T): # intercooling
-                inter = get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["h", "T"])
+                inter = get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["T", "P"])
                 x.extend(inter.s)
                 y.extend(inter.T)
 
-        inter = get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 1, ["h", "s"])
+        inter = get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["s", "P"])
         x.extend(inter.s)
         y.extend(inter.T)
         
         for i in range(0, len(self.preTurbStates.T)):
-            inter = get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "T"])
+            inter = get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"])
             x.extend(inter.s)
             y.extend(inter.T)
 
             if i+1 < len(self.preTurbStates.T): # reheating
-                inter = get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["h", "T"])
+                inter = get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"])
                 x.extend(inter.s)
                 y.extend(inter.T)
 
+        inter = get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"])
+        x.extend(inter.s)
+        y.extend(inter.T)
+        
+
         ax.plot(x, y)
         ax.scatter(x, y, marker=".")
+
+        propertyPlot = PropertyPlot(self.postCompStates.fluid[0], 'TS', axis=ax, unit_system='SI')
+        propertyPlot.calc_isolines(CoolProp.iQ, num=2)
+        plt.close(propertyPlot.figure)
+        propertyPlot.draw()
         
         if label != None:
             ax.legend()
@@ -330,8 +374,9 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 testRankine = Cycle(1, 1)
-testRankine.preCompStates.T = [298]
+#testRankine.preCompStates.T = [298]
 testRankine.preCompStates.P = [8000]
+testRankine.preCompStates.X = [0]
 testRankine.postCompStates.P = [8000000]
 testRankine.preTurbStates.T = [600]
 testRankine.preTurbStates.P = [8000000]
@@ -353,14 +398,15 @@ testRankine.ts_diagram()
 
 
 testRankine = Cycle(2, 2)
-testRankine.preCompStates.T = [298, 298]
+testRankine.preCompStates.T = [None, 400]
 testRankine.preCompStates.P = [8000, 4000000]
+testRankine.preCompStates.X = [0, None]
 testRankine.postCompStates.P = [4000000, 8000000]
 testRankine.preTurbStates.T = [600, 600]
 testRankine.preTurbStates.P = [8000000, 4000000]
 testRankine.postTurbStates.P = [4000000, 8000]
 testRankine.turbineEfficiencies = [0.7, 0.7]
-testRankine.compressorEfficiencies = [0.7, 0.7]
+testRankine.compressorEfficiencies = [1, 1]
 
 testRankine.solve()
 
