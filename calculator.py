@@ -4,6 +4,40 @@ from CoolProp.Plots import PropertyPlot
 import CoolProp
 import matplotlib.pyplot as plt
 import math
+import copy
+
+CEA_TO_COOLPROP_NAMES = {
+    "CH4" : "Methane",
+    "O2" : "Oxygen",
+    "H2" : "Hydrogen",
+    "N2" : "Nitrogen",
+    "CO2" : "CarbonDioxide",
+    "CO" : "CarbonMonoxide",
+    "H2O" : "Water",
+    "AIR" : "Air",
+    "Propane" : "Propane",
+    "Propylene" : "Propylene",
+    "Ethanol" : "Ethanol",
+}
+
+class Mixture:
+    def __init__(self, data):
+        self.data = data
+
+    def to_cea(self, temperature):
+        mix = dict()
+        for part in data:
+            if len(data) == 2:
+                mix[part[0]] = {'mole_fraction': part[1], 'temperature_K': temperature}
+            else:
+                mix[part[0]] = {'mole_fraction': part[1], 'temperature_K': part[2]}
+        return mix
+
+    def to_coolprop(self):
+        mix = "HEOS::"
+        for part in self.data:
+            mix += CEA_TO_COOLPROP_NAMES[part[0]] + "[" + str(part[1]) + "]" + "&"
+        return mix[:-1]
 
 class SetOfStates():
     def __init__(self, numStates, fluid = "Water"):
@@ -56,17 +90,17 @@ class SetOfStates():
                 continue
 
             if self.T[i] == None:
-                self.T[i] = cp.PropsSI("T", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i])
+                self.T[i] = cp.PropsSI("T", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
             if self.P[i] == None:
-                self.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i])
+                self.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
             if self.v[i] == None:
-                self.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i])
+                self.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
             if self.h[i] == None:
-                self.h[i] = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i])
+                self.h[i] = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
             if self.s[i] == None:
-                self.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i])
+                self.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
             if self.X[i] == None:
-                self.X[i] = cp.PropsSI("Q", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i])
+                self.X[i] = cp.PropsSI("Q", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
 
     
     def point_is_solved(self, i):
@@ -169,12 +203,12 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
             else:
                 linValues.append(val)
         
-        intermediates.T.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
-        intermediates.P.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
-        intermediates.v.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
-        intermediates.h.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
-        intermediates.s.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
-        intermediates.X.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI]))
+        intermediates.T.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
+        intermediates.P.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
+        intermediates.v.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
+        intermediates.h.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
+        intermediates.s.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
+        intermediates.X.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
         intermediates.fluid.append(fromSet.fluid[fromI])
     return intermediates
 
@@ -197,21 +231,21 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
         print("Couldn't solve point", i, "in solve_point_inefficient")
         return
 
-    h_isen = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], "S", fromSet.s[fromIndex], toSet.fluid[i])
+    h_isen = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], "S", fromSet.s[fromIndex], toSet.fluid[i].to_coolprop())
     toSet.h[i] = fromSet.h[fromIndex] + enthalpyMultiplier * (h_isen - fromSet.h[fromIndex])
     
     knowns.append(["Hmass", toSet.h[i]])
 
     if toSet.T[i] == None:
-        toSet.T[i] = cp.PropsSI("T", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
+        toSet.T[i] = cp.PropsSI("T", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i].to_coolprop())
     if toSet.P[i] == None:
-        toSet.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
+        toSet.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i].to_coolprop())
     if toSet.v[i] == None:
-        toSet.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
+        toSet.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i].to_coolprop())
     if toSet.s[i] == None:
-        toSet.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
+        toSet.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i].to_coolprop())
     if toSet.X[i] == None:
-        toSet.X[i] = cp.PropsSI("Q", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i])
+        toSet.X[i] = cp.PropsSI("Q", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], toSet.fluid[i].to_coolprop())
 
 
 
@@ -223,13 +257,17 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
 
 
 class Cycle: # should be valid for both rankine and brayton
-    def __init__(self, numComp=1, numTurb=1, fluid = "Water"):
-        self.preCompStates = SetOfStates(numComp, fluid)
-        self.postCompStates = SetOfStates(numComp, fluid)
-        self.preTurbStates = SetOfStates(numTurb, fluid)
-        self.postTurbStates = SetOfStates(numTurb, fluid)
+    def __init__(self, numComp, numTurb, fluid):
+        self.preCompStates = SetOfStates(numComp, copy.deepcopy(fluid))
+        self.postCompStates = SetOfStates(numComp, copy.deepcopy(fluid))
+        self.heatingStates = SetOfStates(2, copy.deepcopy(fluid)) # heatingStates = [before fuel injected, before combustion but after fuel injected]
+        self.preTurbStates = SetOfStates(numTurb, copy.deepcopy(fluid))
+        self.postTurbStates = SetOfStates(numTurb, copy.deepcopy(fluid))
         self.turbineEfficiencies = [1] * numTurb
         self.compressorEfficiencies = [1] * numComp
+        
+        self.externalFuelCompressionWork = 0 # work to pressurize fuel before injecting it into combustion chamber
+        self.addedFuelMassFrac = 0
 
         self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
         self.intermediates = None
@@ -240,6 +278,9 @@ class Cycle: # should be valid for both rankine and brayton
         for i in range(0, len(self.preCompStates.T)):
             states.extend(self.preCompStates.get_point(i))
             states.extend(self.postCompStates.get_point(i))
+
+        if self.heatingStates.set_is_fully_solved():
+            states.extend(self.heatingStates)
             
         for i in range(0, len(self.preTurbStates.T)):
             states.extend(self.preTurbStates.get_point(i))
@@ -247,15 +288,15 @@ class Cycle: # should be valid for both rankine and brayton
         return states # returned object is READ ONLY
 
 
-    def solve(self):
+    def solve_cp(self):
         for subset in self.allStateSets:
             subset.solve_points()
 
         for i in range(0, len(self.preCompStates.T)):
             if self.preCompStates.point_is_solved(i) and self.postCompStates.point_is_solved(i):
-                h_isen = cp.PropsSI("Hmass", "P", self.postCompStates.P[i], "Smass", self.preCompStates.s[i])
-                self.compressorEfficiencies[turbNum] = (self.postCompStates.h[i] - self.preCompStates.h[i]) / (h_isen - self.preCompStates.h[i])
-                print("Compressor efficiency overwritten")
+                h_isen = cp.PropsSI("Hmass", "P", self.postCompStates.P[i], "Smass", self.preCompStates.s[i], self.preCompStates.fluid[i].to_coolprop())
+                self.compressorEfficiencies[i] = (h_isen - self.preCompStates.h[i]) / (self.postCompStates.h[i] - self.preCompStates.h[i])
+                print("Compressor efficiency overwritten to", self.compressorEfficiencies[i])
             elif self.preCompStates.point_is_solved(i):
                 solve_point_inefficient(self.postCompStates, i, self.preCompStates, i, 1 / self.compressorEfficiencies[i])
             elif self.postCompStates.point_is_solved(i):
@@ -263,13 +304,62 @@ class Cycle: # should be valid for both rankine and brayton
 
         for i in range(0, len(self.preTurbStates.T)):
             if self.preTurbStates.point_is_solved(i) and self.postTurbStates.point_is_solved(i):
-                h_isen = cp.PropsSI("Hmass", "P", self.postTurbStates.P[i], "Smass", self.preTurbStates.s[i])
-                self.turbineEfficiencies[turbNum] = (self.postTurbStates.h[i] - self.preTurbStates.h[i]) / (h_isen - self.preTurbStates.h[i])
-                print("Turbine efficiency overwritten")
+                h_isen = cp.PropsSI("Hmass", "P", self.postTurbStates.P[i], "Smass", self.preTurbStates.s[i], self.preTurbStates.fluid[i].to_coolprop())
+                self.turbineEfficiencies[i] = (self.postTurbStates.h[i] - self.preTurbStates.h[i]) / (h_isen - self.preTurbStates.h[i])
+                print("Turbine efficiency overwritten to", self.turbineEfficiencies[i])
             elif self.preTurbStates.point_is_solved(i):
                 solve_point_inefficient(self.postTurbStates, i, self.preTurbStates, i, self.turbineEfficiencies[i])
             elif self.postTurbStates.point_is_solved(i):
                 solve_point_inefficient(self.preTurbStates, i, self.postTurbStates, i, 1 / self.turbineEfficiencies[i])
+
+    def calculate_pre_combustion_heat_exchange(self, q_in):
+        self.solve_cp()
+        self.heatingStates.P[0] = self.postCompStates.P[-1]
+        self.heatingStates.h[0] = self.postCompStates.h[-1] + q_in
+        self.heatingStates.fluid[0] = self.postCompStates.fluid[-1]
+        self.heatingStates.P[1] = self.heatingStates.P[0]
+        self.heatingStates.h[1] = self.heatingStates.h[0]
+        self.heatingStates.fluid[1] = self.heatingStates.fluid[0]
+        self.heatingStates.solve_points()
+        
+
+    def inject_fuel_after_compressor_no_propagation(self, fuelMixture, fuelTotalMassFraction, fuelCompressorEfficiency):
+        self.addedFuelMassFrac = fuelTotalMassFraction
+        if not self.heatingStates.set_is_fully_solved():
+            self.calculate_pre_combustion_heat_exchange(0)
+            print("Assumed no pre-combustion heat exchange when injecting fuel")
+
+        # compressing fuel from standard atmospheric conditions to same pressure as air at exit of compressor
+        # then finding work done and final fuel temperature during injection
+        h0 = cp.PropsSI("Hmass", "P", 101325, "T", 298, fuelMixture.to_coolprop())
+        s0 = cp.PropsSI("Smass", "P", 101325, "T", 298, fuelMixture.to_coolprop())
+        h1 = cp.PropsSI("Hmass", "P", self.heatingStates.P[0], "S", s0, fuelMixture.to_coolprop())
+        h1 = h0 + (h1 - h0) / fuelCompressorEfficiency
+        fuelTemp = cp.PropsSI("T", "P", self.heatingStates.P[0], "Hmass", h1, fuelMixture.to_coolprop())
+        self.externalFuelCompressionWork = (h1 - h0) * fuelTotalMassFraction
+
+        M_oxidiser = cp.PropsSI("molar_mass", "P", self.heatingStates.P[0], "T", self.heatingStates.T[0], self.heatingStates.fluid[0].to_coolprop())
+        M_fuel = cp.PropsSI("molar_mass", "P", self.heatingStates.P[0], "T", fuelTemp, fuelMixture.to_coolprop())
+        n_oxidiser = (1 - fuelTotalMassFraction) / M_oxidiser
+        n_fuel = fuelTotalMassFraction / M_fuel
+        fuelMoleFraction = n_fuel / (n_oxidiser + n_fuel)
+
+        fluid = copy.deepcopy(self.heatingStates.fluid[0])
+        for i in range(0, len(fluid.data)):
+            fluid.data[i][1] = fluid.data[i][1] * (1 - fuelMoleFraction)
+        for i in range(0, len(fuelMixture.data)):
+            fluid.data.append([fuelMixture.data[i][0], fuelMixture.data[i][1] * fuelMoleFraction, fuelTemp])
+
+        self.heatingStates.fluid[1] = fluid
+
+        print(fluid.data)
+        print("fuel compression work:", self.externalFuelCompressionWork)
+        print("fuel injection temperature:", fuelTemp)
+        print("fuel mole fraction:", fuelMoleFraction)
+        print("molar masses:", M_oxidiser, M_fuel)
+        
+        
+        
 
     def q_in(self):
         q = abs(self.preTurbStates.h[0] - self.postCompStates.h[-1])
@@ -286,7 +376,8 @@ class Cycle: # should be valid for both rankine and brayton
     def w_in(self):
         w = 0
         for i in range(0, len(self.preCompStates.T)):
-            w += abs(self.postCompStates.h[i] - self.preCompStates.h[i])
+            w += abs(self.postCompStates.h[i] - self.preCompStates.h[i]) * (1 - self.addedFuelMassFrac)
+        w += self.externalFuelCompressionWork
         return w
 
     def w_out(self):
@@ -311,7 +402,7 @@ class Cycle: # should be valid for both rankine and brayton
                 self.intermediates.extend(get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["T", "P"]))
 
         # boiler / combustion chamber
-        self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["s", "P"]))
+        self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["h", "P"]))
         
         for i in range(0, len(self.preTurbStates.T)): # turbine
             self.intermediates.extend(get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"]))
@@ -353,7 +444,7 @@ class Cycle: # should be valid for both rankine and brayton
         if isRankine:
             original_xlim = ax.get_xlim()
             original_ylim = ax.get_ylim()
-            propertyPlot = PropertyPlot(self.postCompStates.fluid[0], 'TS', axis=ax, unit_system='SI')
+            propertyPlot = PropertyPlot(self.postCompStates.fluid[0].to_coolprop(), 'TS', axis=ax, unit_system='SI')
             propertyPlot.calc_isolines(CoolProp.iQ, num=2)
             plt.close(propertyPlot.figure)
             propertyPlot.draw()
@@ -396,7 +487,7 @@ class Cycle: # should be valid for both rankine and brayton
         """if isRankine:
             original_xlim = ax.get_xlim()
             original_ylim = ax.get_ylim()
-            propertyPlot = PropertyPlot(self.postCompStates.fluid[0], 'PV', axis=ax, unit_system='SI')
+            propertyPlot = PropertyPlot(self.postCompStates.fluid[0].to_coolprop(), 'PV', axis=ax, unit_system='SI')
             propertyPlot.calc_isolines(CoolProp.iQ, num=2)
             plt.close(propertyPlot.figure)
             propertyPlot.draw()
@@ -412,7 +503,7 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
-testRankine = Cycle(1, 1)
+testRankine = Cycle(1, 1, Mixture([["H2O", 1]]))
 testRankine.preCompStates.P = [8000]
 testRankine.preCompStates.X = [0]
 testRankine.postCompStates.P = [8000000]
@@ -422,7 +513,7 @@ testRankine.postTurbStates.P = [8000]
 testRankine.turbineEfficiencies[0] = 1
 testRankine.compressorEfficiencies[0] = 0.7
 
-testRankine.solve()
+testRankine.solve_cp()
 print(testRankine.efficiency())
 rankineTS = testRankine.ts_diagram(label="unmodified", isRankine=True)
 rankinePV = testRankine.pv_diagram(label="unmodified", isRankine=True)
@@ -430,7 +521,7 @@ rankinePV = testRankine.pv_diagram(label="unmodified", isRankine=True)
 rankineTS.set_title("Rankine Test Plot Ts")
 rankinePV.set_title("Rankine Test Plot Pv")
 
-testRankine = Cycle(1, 2)
+testRankine = Cycle(1, 2, Mixture([["H2O", 1]]))
 testRankine.preCompStates.P = [8000]
 testRankine.preCompStates.X = [0]
 testRankine.postCompStates.P = [8000000]
@@ -439,21 +530,25 @@ testRankine.preTurbStates.P = [8000000, 4000000]
 testRankine.postTurbStates.P = [4000000, 8000]
 testRankine.turbineEfficiencies = [0.7, 0.7]
 
-testRankine.solve()
+testRankine.solve_cp()
 print(testRankine.efficiency())
 testRankine.ts_diagram(ax=rankineTS, label = "reheater")
 testRankine.pv_diagram(ax=rankinePV, label = "reheater")
 
 
-testBrayton = Cycle(1, 1, "Air")
+testBrayton = Cycle(1, 1, Mixture([["AIR", 1]]))
 testBrayton.preCompStates.P = [101325]
 testBrayton.postCompStates.P = [500000]
 testBrayton.preCompStates.T = [298]
 testBrayton.preTurbStates.T = [600]
 testBrayton.preTurbStates.P = [500000]
 testBrayton.postTurbStates.P = [101325]
+#testBrayton.turbineEfficiencies = [0.9]
+#testBrayton.compressorEfficiencies = [0.9]
 
-testBrayton.solve()
+testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.1, 0.9)
+
+testBrayton.solve_cp()
 braytonTS = testBrayton.ts_diagram(label="isentropic")
 braytonPV = testBrayton.pv_diagram(label="isentropic")
 print(testBrayton.efficiency())
@@ -462,7 +557,7 @@ braytonTS.set_title("Brayton Test Plot Ts")
 braytonPV.set_title("Brayton Test Plot Pv")
 
 
-testBrayton = Cycle(1, 1, "Air")
+testBrayton = Cycle(1, 1, Mixture([["AIR", 1]]))
 testBrayton.preCompStates.P = [101325]
 testBrayton.postCompStates.P = [500000]
 testBrayton.preCompStates.T = [298]
@@ -472,13 +567,13 @@ testBrayton.postTurbStates.P = [101325]
 testBrayton.turbineEfficiencies = [0.7]
 testBrayton.compressorEfficiencies = [0.7]
 
-testBrayton.solve()
+testBrayton.solve_cp()
 print(testBrayton.efficiency())
 testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor")
 testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor")
 
 
-testBrayton = Cycle(2, 2, "Air")
+testBrayton = Cycle(2, 2, Mixture([["AIR", 1]]))
 testBrayton.preCompStates.P = [101325, 250000]
 testBrayton.postCompStates.P = [250000, 500000]
 testBrayton.preCompStates.T = [298, 298]
@@ -488,7 +583,7 @@ testBrayton.postTurbStates.P = [250000, 101325]
 testBrayton.turbineEfficiencies = [0.7, 0.7]
 testBrayton.compressorEfficiencies = [0.7, 0.7]
 
-testBrayton.solve()
+testBrayton.solve_cp()
 print(testBrayton.efficiency())
 testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor with intercooler and reheating")
 testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor with intercooler and reheating")
