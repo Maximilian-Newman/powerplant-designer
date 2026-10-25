@@ -21,23 +21,44 @@ CEA_TO_COOLPROP_NAMES = {
 }
 
 class Mixture:
-    def __init__(self, data):
+    def __init__(self, data=None):
         self.data = data
 
-    def to_cea(self, temperature):
-        mix = dict()
-        for part in data:
-            if len(data) == 2:
-                mix[part[0]] = {'mole_fraction': part[1], 'temperature_K': temperature}
+    def to_cea(self, temperature, products_from_reactants=False):
+        names = []
+        temps = []
+        molFracs = []
+        massFracs = []
+        for i in range(0, len(self.data)):
+            names.append(self.data[i][0])
+            molFracs.append(self.data[i][1])
+            if len(self.data[i]) == 2:
+                temps.append(temperature)
             else:
-                mix[part[0]] = {'mole_fraction': part[1], 'temperature_K': part[2]}
-        return mix
+                temps.append(self.data[i][2])
+        
+        mix = cea.Mixture(names, products_from_reactants=products_from_reactants)
+        totMass = 0
+        for i in range(0, len(names)):
+            M = cp.PropsSI("molar_mass", self.to_coolprop())
+            m = molFracs[i] * M
+            massFracs.append(m)
+            totMass += m
+        for i in range(0, len(names)):
+            massFracs[i] = massFracs[i] / totMass
+        
+        return [mix, massFracs, temps]
 
     def to_coolprop(self):
         mix = "HEOS::"
         for part in self.data:
             mix += CEA_TO_COOLPROP_NAMES[part[0]] + "[" + str(part[1]) + "]" + "&"
         return mix[:-1]
+
+    def from_cea(self, ceaData):
+        self.data = []
+        for species, fraction in ceaData.mole_fractions.items():
+            self.data.append([species, fraction[2]])
 
 class SetOfStates():
     def __init__(self, numStates, fluid = "Water"):
@@ -357,6 +378,31 @@ class Cycle: # should be valid for both rankine and brayton
         print("fuel injection temperature:", fuelTemp)
         print("fuel mole fraction:", fuelMoleFraction)
         print("molar masses:", M_oxidiser, M_fuel)
+
+
+    def propagate_gas_from_combustor(self):
+        for i in range(0, len(self.preTurbStates.T)):
+            self.preTurbStates.fluid[i] = copy.deepcopy(self.preTurbStates.fluid[0])
+            self.postTurbStates.fluid[i] = copy.deepcopy(self.preTurbStates.fluid[0])
+
+
+    def combust(self):
+        reactants, massFracs, temps = self.heatingStates.fluid[1].to_cea(self.heatingStates.T)
+        products = self.heatingStates.fluid[1].to_cea(self.heatingStates.T[1], products_from_reactants=True)[0]
+        solver = cea.EqSolver(products, reactants=reactants, transport=True)
+        solution = cea.EqSolution(solver)
+        hc = reactants.calc_property(cea.ENTHALPY, massFracs, temps) / cea.R
+        solver.solve(solution, massFracs, self.heatingStates.P[1], hc=hc, mode="HP")
+
+        
+        #solution = cea.EqSolution(solver, pressure=self.heatingStates.P[1], mode='hp')
+        self.preTurbStates.T[0] = solution.temperature
+        products = Mixture()
+        products.from_cea(solution)
+        self.preTurbStates.fluid[0] = products
+
+        self.propagate_gas_from_combustor()
+        self.solve_cp()
         
         
         
@@ -392,7 +438,6 @@ class Cycle: # should be valid for both rankine and brayton
 
 
     def update_intermediates(self):
-        allPoints = self.combined_states()
         self.intermediates = SetOfStates(0)
         
         for i in range(0, len(self.preCompStates.T)): # compressor
@@ -536,17 +581,19 @@ testRankine.ts_diagram(ax=rankineTS, label = "reheater")
 testRankine.pv_diagram(ax=rankinePV, label = "reheater")
 
 
-testBrayton = Cycle(1, 1, Mixture([["AIR", 1]]))
+testBrayton = Cycle(1, 1, Mixture([["O2", 1]]))
 testBrayton.preCompStates.P = [101325]
 testBrayton.postCompStates.P = [500000]
 testBrayton.preCompStates.T = [298]
-testBrayton.preTurbStates.T = [600]
+#testBrayton.preTurbStates.T = [600]
 testBrayton.preTurbStates.P = [500000]
 testBrayton.postTurbStates.P = [101325]
 #testBrayton.turbineEfficiencies = [0.9]
 #testBrayton.compressorEfficiencies = [0.9]
 
+testBrayton.calculate_pre_combustion_heat_exchange(30000)
 testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.1, 0.9)
+testBrayton.combust()
 
 testBrayton.solve_cp()
 braytonTS = testBrayton.ts_diagram(label="isentropic")
