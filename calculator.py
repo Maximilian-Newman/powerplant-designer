@@ -18,9 +18,12 @@ CEA_TO_COOLPROP_NAMES = {
     "H2O" : "Water",
     "H2O(L)" : "Water",
     "H2O(cr)" : "Water",
+    "Ar" : "Argon",
+    "Ne" : "Neon",
+    "NO" : "Nitrogen",
 }
 
-KNOWN_CP_UNSUPPORTED = ["H", "OH"]
+KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO"]
 
 def cea_to_cp_name(name):
     if name in KNOWN_CP_UNSUPPORTED:
@@ -56,7 +59,7 @@ class Mixture:
         mix = cea.Mixture(names, products_from_reactants=products_from_reactants)
         totMass = 0
         for i in range(0, len(names)):
-            M = cp.PropsSI("molar_mass", self.to_coolprop())
+            M = cp.PropsSI("molar_mass", "T", temperature, "P", 101325, self.to_coolprop())
             m = molFracs[i] * M
             massFracs.append(m)
             totMass += m
@@ -66,11 +69,19 @@ class Mixture:
         return [mix, massFracs, temps]
 
     def to_coolprop(self):
+        if self.data == AIR().data:
+            return "Air"
         mix = "HEOS::"
         for part in self.data:
             cpName = cea_to_cp_name(part[0])
             if cpName != None:
-                mix += cpName + "[" + str(part[1]) + "]" + "&"
+                if cpName == "Argon" and "Neon" in mix:
+                    pass
+                if cpName == "Neon" and "Argon" in mix:
+                    pass
+                else:
+                    mix += cpName + "[" + str(part[1]) + "]" + "&"
+            
         return mix[:-1]
 
     def from_cea(self, ceaData):
@@ -79,6 +90,10 @@ class Mixture:
             if fraction > 0.00001:
                 self.data.append([species, fraction])
                 print(species, fraction)
+
+def AIR():
+    return Mixture([["N2", 0.78084], ["O2", 0.20946], ["Ar", 0.00934], ["CO2", 0.000412], ["Ne", 0.00001818]])
+    # from https://www.engineeringtoolbox.com/air-composition-d_212.html
 
 class SetOfStates():
     def __init__(self, numStates, fluid = "Water"):
@@ -249,11 +264,7 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, flui
         
 
         for k in range(0, len(data)):
-            if k == numPoints:
-                print(data2[0:3], flush=True)
             data[k] = data[k] + (data2[k] - data[k]) * i / numPoints
-            if k == numPoints:
-                print(data[0:3], flush=True)
     
     return data
 
@@ -263,8 +274,6 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
     intermediates = SetOfStates(0)
     starts = [fromSet.get_property(fromI, symbol) for symbol in linearProperties]
     ends = [toSet.get_property(toI, symbol) for symbol in linearProperties]
-    
-    #print(linearProperties, starts, ends)
 
     for i in range(0, len(linearProperties)):
         if linearProperties[i] == "h":
@@ -279,14 +288,8 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
     fluid1 = fromSet.fluid[fromI].to_coolprop()
     fluid2 = toSet.fluid[toI].to_coolprop()
 
-    tasks = [[linearProperties, starts, ends, fluid1, fluid2, i, numPoints] for i in range(1, numPoints+1)]
+    tasks = [[linearProperties, starts, ends, fluid1, fluid2, i, numPoints] for i in range(1, numPoints)]
 
-    #i = numPoints
-    #for j in range(0, len(linearProperties)):
-    #    val = starts[j] + (ends[j] - starts[j]) * i / (numPoints)
-    #    print("\nshould be same:")
-    #    print(ends[j])
-    #    print(val)
     
     with multiprocessing.Pool(processes=3) as pool:
         fullData = pool.starmap(intermediate_points_worker_pool, tasks)
@@ -302,7 +305,7 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
         intermediates.X.append(point[5])
         intermediates.fluid.append(fromSet.fluid[fromI])
         
-    #intermediates.extend(toSet.get_point(toI))
+    intermediates.extend(toSet.get_point(toI))
     return intermediates
 
 
@@ -401,7 +404,6 @@ class Cycle: # should be valid for both rankine and brayton
                 self.turbineEfficiencies[i] = (self.postTurbStates.h[i] - self.preTurbStates.h[i]) / (h_isen - self.preTurbStates.h[i])
                 print("Turbine efficiency overwritten to", self.turbineEfficiencies[i])
             elif self.preTurbStates.point_is_solved(i):
-                print("test")
                 solve_point_inefficient(self.postTurbStates, i, self.preTurbStates, i, self.turbineEfficiencies[i])
             elif self.postTurbStates.point_is_solved(i):
                 solve_point_inefficient(self.preTurbStates, i, self.postTurbStates, i, 1 / self.turbineEfficiencies[i])
@@ -472,40 +474,8 @@ class Cycle: # should be valid for both rankine and brayton
         products = Mixture()
         products.from_cea(solution)
         self.preTurbStates.fluid[0] = products
-
-        print()
-        print("pre  T", self.preTurbStates.T)
-        print("post T", self.postTurbStates.T)
-        print("pre  P", self.preTurbStates.P)
-        print("post P", self.postTurbStates.P)
-        print("pre  v", self.preTurbStates.v)
-        print("post v", self.postTurbStates.v)
-        print("pre  s", self.preTurbStates.s)
-        print("post s", self.postTurbStates.s)
-
         self.propagate_gas_from_combustor()
-
-        print()
-        print("pre  T", self.preTurbStates.T)
-        print("post T", self.postTurbStates.T)
-        print("pre  P", self.preTurbStates.P)
-        print("post P", self.postTurbStates.P)
-        print("pre  v", self.preTurbStates.v)
-        print("post v", self.postTurbStates.v)
-        print("pre  s", self.preTurbStates.s)
-        print("post s", self.postTurbStates.s)
-        
         self.solve_cp()
-
-        print()
-        print("pre  T", self.preTurbStates.T)
-        print("post T", self.postTurbStates.T)
-        print("pre  P", self.preTurbStates.P)
-        print("post P", self.postTurbStates.P)
-        print("pre  v", self.preTurbStates.v)
-        print("post v", self.postTurbStates.v)
-        print("pre  s", self.preTurbStates.s)
-        print("post s", self.postTurbStates.s)
         
         
         
@@ -631,17 +601,6 @@ class Cycle: # should be valid for both rankine and brayton
         
         ax.plot(x, y)
         #ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
-
-        """if isRankine:
-            original_xlim = ax.get_xlim()
-            original_ylim = ax.get_ylim()
-            propertyPlot = PropertyPlot(self.postCompStates.fluid[0].to_coolprop(), 'PV', axis=ax, unit_system='SI')
-            propertyPlot.calc_isolines(CoolProp.iQ, num=2)
-            plt.close(propertyPlot.figure)
-            propertyPlot.draw()
-            ax.set_xlim(original_xlim)
-            ax.set_ylim(original_ylim)
-            ax.autoscale(True)"""
         
         if label != None:
             ax.legend()
@@ -690,7 +649,7 @@ if __name__ == "__main__":
     testRankine.pv_diagram(ax=rankinePV, label = "reheater")
     """
 
-    testBrayton = Cycle(1, 1, Mixture([["O2", 1]]))
+    testBrayton = Cycle(1, 1, AIR())
     testBrayton.preCompStates.P = [101325]
     testBrayton.postCompStates.P = [500000]
     testBrayton.preCompStates.T = [298]
