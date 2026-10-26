@@ -219,25 +219,7 @@ class SetOfStates():
 
 
 
-def intermediate_points_worker(q, linearProperties, starts, ends, fluid, i, numPoints):
-    linValues = []
-    for j in range(0, len(linearProperties)):
-        val = starts[j] + (ends[j] - starts[j]) * i / numPoints
-        if linearProperties[j] == "D":
-            linValues.append(1 / val)
-        else:
-            linValues.append(val)
-
-    data = [i]
-    data.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    q.put(data)
-
-def intermediate_points_worker_pool(linearProperties, starts, ends, fluid, i, numPoints):
+def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, fluid2, i, numPoints):
     linValues = []
     for j in range(0, len(linearProperties)):
         val = starts[j] + (ends[j] - starts[j]) * i / numPoints
@@ -247,12 +229,32 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid, i, nu
             linValues.append(val)
 
     data = []
-    data.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
-    data.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
+    data.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
+    data.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
+    data.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
+    data.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
+    data.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
+
+    if fluid1 != fluid2: # interpolating between fluid properties if there is a chemical change during a process
+                         # noticable discrete jumps are visible on Ts and Pv diagrams if this is not done
+        data2 = []
+        #data2.append(0)
+        data2.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
+        data2.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
+        data2.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
+        data2.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
+        data2.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
+        data2.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
+        
+
+        for k in range(0, len(data)):
+            if k == numPoints:
+                print(data2[0:3], flush=True)
+            data[k] = data[k] + (data2[k] - data[k]) * i / numPoints
+            if k == numPoints:
+                print(data[0:3], flush=True)
+    
     return data
 
 
@@ -261,6 +263,8 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
     intermediates = SetOfStates(0)
     starts = [fromSet.get_property(fromI, symbol) for symbol in linearProperties]
     ends = [toSet.get_property(toI, symbol) for symbol in linearProperties]
+    
+    #print(linearProperties, starts, ends)
 
     for i in range(0, len(linearProperties)):
         if linearProperties[i] == "h":
@@ -272,61 +276,20 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
         if linearProperties[i] == "v":
             linearProperties[i] = "D"
 
-    #q = multiprocessing.Queue()
-    #processes = []
-    fluid = fromSet.fluid[fromI].to_coolprop()
+    fluid1 = fromSet.fluid[fromI].to_coolprop()
+    fluid2 = toSet.fluid[toI].to_coolprop()
 
-    tasks = [(linearProperties, starts, ends, fluid, i, numPoints) for i in range(1, numPoints)]
+    tasks = [[linearProperties, starts, ends, fluid1, fluid2, i, numPoints] for i in range(1, numPoints+1)]
+
+    #i = numPoints
+    #for j in range(0, len(linearProperties)):
+    #    val = starts[j] + (ends[j] - starts[j]) * i / (numPoints)
+    #    print("\nshould be same:")
+    #    print(ends[j])
+    #    print(val)
+    
     with multiprocessing.Pool(processes=3) as pool:
         fullData = pool.starmap(intermediate_points_worker_pool, tasks)
-    
-    #for i in range(0, numPoints):
-        #p = multiprocessing.Process(target=intermediate_points_worker, args=(q,linearProperties.copy(), starts.copy(), ends.copy(), fluid, i, numPoints))
-        #p.start()
-        #processes.append(p)
-
-        """
-        linValues = []
-        for j in range(0, len(linearProperties)):
-            val = starts[j] + (ends[j] - starts[j]) * i / numPoints
-            if linearProperties[j] == "D":
-                linValues.append(1 / val)
-            else:
-                linValues.append(val)
-        
-        intermediates.T.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
-        intermediates.P.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
-        intermediates.v.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
-        intermediates.h.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
-        intermediates.s.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
-        intermediates.X.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
-        intermediates.fluid.append(fromSet.fluid[fromI])
-        """
-
-    #print("test 1")
-    
-    #fullData = [None] * numPoints
-    
-    #for p in processes:
-    #    data = q.get()
-    #    index = data[0]
-    #    fullData[index] = data[1:]
-    #    print("got data")
-
-        
-
-    #print("test 2")
-
-    #q.close()
-    #print("test 3")
-    #q.join_thread()
-    #print("test 4")
-    
-    #for p in processes:
-    #    p.join()
-    #print("test 5")
-
-    
 
     intermediates.extend(fromSet.get_point(fromI))
 
@@ -339,10 +302,7 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
         intermediates.X.append(point[5])
         intermediates.fluid.append(fromSet.fluid[fromI])
         
-    intermediates.extend(toSet.get_point(toI))
-    
-        
-    
+    #intermediates.extend(toSet.get_point(toI))
     return intermediates
 
 
@@ -441,6 +401,7 @@ class Cycle: # should be valid for both rankine and brayton
                 self.turbineEfficiencies[i] = (self.postTurbStates.h[i] - self.preTurbStates.h[i]) / (h_isen - self.preTurbStates.h[i])
                 print("Turbine efficiency overwritten to", self.turbineEfficiencies[i])
             elif self.preTurbStates.point_is_solved(i):
+                print("test")
                 solve_point_inefficient(self.postTurbStates, i, self.preTurbStates, i, self.turbineEfficiencies[i])
             elif self.postTurbStates.point_is_solved(i):
                 solve_point_inefficient(self.preTurbStates, i, self.postTurbStates, i, 1 / self.turbineEfficiencies[i])
@@ -506,18 +467,45 @@ class Cycle: # should be valid for both rankine and brayton
         print(temps)
         massFracs = np.array(massFracs)
         hc = reactants.calc_property(cea.ENTHALPY, massFracs, np.array(temps)) / cea.R
-        #solver.solve(solution, massFracs, self.heatingStates.P[1], hc=hc, mode="HP")
         solver.solve(solution, cea.HP, hc, self.heatingStates.P[1] / 100000, massFracs)
-
-        
-        #solution = cea.EqSolution(solver, pressure=self.heatingStates.P[1], mode='hp')
         self.preTurbStates.T[0] = solution.T
         products = Mixture()
         products.from_cea(solution)
         self.preTurbStates.fluid[0] = products
 
+        print()
+        print("pre  T", self.preTurbStates.T)
+        print("post T", self.postTurbStates.T)
+        print("pre  P", self.preTurbStates.P)
+        print("post P", self.postTurbStates.P)
+        print("pre  v", self.preTurbStates.v)
+        print("post v", self.postTurbStates.v)
+        print("pre  s", self.preTurbStates.s)
+        print("post s", self.postTurbStates.s)
+
         self.propagate_gas_from_combustor()
+
+        print()
+        print("pre  T", self.preTurbStates.T)
+        print("post T", self.postTurbStates.T)
+        print("pre  P", self.preTurbStates.P)
+        print("post P", self.postTurbStates.P)
+        print("pre  v", self.preTurbStates.v)
+        print("post v", self.postTurbStates.v)
+        print("pre  s", self.preTurbStates.s)
+        print("post s", self.postTurbStates.s)
+        
         self.solve_cp()
+
+        print()
+        print("pre  T", self.preTurbStates.T)
+        print("post T", self.postTurbStates.T)
+        print("pre  P", self.preTurbStates.P)
+        print("post P", self.postTurbStates.P)
+        print("pre  v", self.preTurbStates.v)
+        print("post v", self.postTurbStates.v)
+        print("pre  s", self.preTurbStates.s)
+        print("post s", self.postTurbStates.s)
         
         
         
@@ -559,10 +547,10 @@ class Cycle: # should be valid for both rankine and brayton
             self.intermediates.extend(get_intermediate_points(self.preCompStates, i, self.postCompStates, i, ["h", "s"]))
 
             if i+1 < len(self.preCompStates.T): # intercooling
-                self.intermediates.extend(get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["T", "P"]))
+                self.intermediates.extend(get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["h", "P"]))
 
         # boiler / combustion chamber
-        self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["h", "P"]))
+        self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["T", "P"]))
         
         for i in range(0, len(self.preTurbStates.T)): # turbine
             self.intermediates.extend(get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"]))
@@ -571,7 +559,7 @@ class Cycle: # should be valid for both rankine and brayton
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"]))
         
         # condenser
-        self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"]))
+        self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["T", "P"]))
 
     
     def ts_diagram(self, ax=None, label=None, isRankine=False):
@@ -717,7 +705,6 @@ if __name__ == "__main__":
     testBrayton.combust()
 
     #testBrayton.solve_cp()
-    print("test")
     braytonTS = testBrayton.ts_diagram(label="isentropic")
     braytonPV = testBrayton.pv_diagram(label="isentropic")
     print(testBrayton.efficiency())
