@@ -40,10 +40,11 @@ def cea_to_cp_name(name):
 
 class Mixture:
     def __init__(self, data=None):
+        if data == None:
+            data = []
         self.data = data
 
     def to_cea(self, temperature, products_from_reactants=False):
-        print(self.data)
         names = []
         temps = []
         molFracs = []
@@ -71,6 +72,7 @@ class Mixture:
     def to_coolprop(self):
         if self.data == AIR().data:
             return "Air"
+        filtered = Mixture()
         mix = "HEOS::"
         for part in self.data:
             cpName = cea_to_cp_name(part[0])
@@ -80,7 +82,15 @@ class Mixture:
                 if cpName == "Neon" and "Argon" in mix:
                     pass
                 else:
+                    filtered.data.append(part)
                     mix += cpName + "[" + str(part[1]) + "]" + "&"
+
+        filtered.normalize()
+
+        mix = "HEOS::"
+        for part in filtered.data:
+            cpName = cea_to_cp_name(part[0])
+            mix += cpName + "[" + str(part[1]) + "]" + "&"
             
         return mix[:-1]
 
@@ -90,6 +100,34 @@ class Mixture:
             if fraction > 0.00001:
                 self.data.append([species, fraction])
                 print(species, fraction)
+        self.normalize()
+
+    def normalize(self):
+        n_tot = 0
+        for part in self.data:
+            n_tot += part[1]
+        for i in range(0, len(self.data)):
+            self.data[i][1] = self.data[i][1] / n_tot
+
+    def pie_chart(self, title, temp=None, ax=None):
+        title += " Mole Fractions"
+        fracs = []
+        labels = []
+        for part in self.data:
+            fracs.append(part[1])
+            if len(part) > 2:
+                labels.append(part[0] + "  T = " + str(part[2]) + " K  (" + str(round(100*part[1], 3)) + "%)")
+            elif temp != None:
+                labels.append(part[0] + "  T = " + str(temp) + " K  (" + str(round(100*part[1], 3)) + "%)")
+            else:
+                labels.append(part[0] + "  (" + str(round(100*part[1], 3)) + "%)")
+
+        if ax == None:
+            ax = plt.figure().subplots()
+        wedges = ax.pie(fracs)[0]
+        ax.set_title(title)
+        ax.legend(wedges, labels)
+        plt.show(block=False)
 
 def AIR():
     return Mixture([["N2", 0.78084], ["O2", 0.20946], ["Ar", 0.00934], ["CO2", 0.000412], ["Ne", 0.00001818]])
@@ -252,9 +290,8 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, flui
     data.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
 
     if fluid1 != fluid2: # interpolating between fluid properties if there is a chemical change during a process
-                         # noticable discrete jumps are visible on Ts and Pv diagrams if this is not done
+                                   # noticable discrete jumps are visible on Ts and Pv diagrams if this is not done
         data2 = []
-        #data2.append(0)
         data2.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
         data2.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
         data2.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
@@ -448,7 +485,6 @@ class Cycle: # should be valid for both rankine and brayton
 
         self.heatingStates.fluid[1] = fluid
 
-        print(fluid.data)
         print("fuel compression work:", self.externalFuelCompressionWork)
         print("fuel injection temperature:", fuelTemp)
         print("fuel mole fraction:", fuelMoleFraction)
@@ -466,7 +502,7 @@ class Cycle: # should be valid for both rankine and brayton
         products = self.heatingStates.fluid[1].to_cea(self.heatingStates.T[1], products_from_reactants=True)[0]
         solver = cea.EqSolver(products, reactants=reactants, transport=True)
         solution = cea.EqSolution(solver)
-        print(temps)
+        #print(temps)
         massFracs = np.array(massFracs)
         hc = reactants.calc_property(cea.ENTHALPY, massFracs, np.array(temps)) / cea.R
         solver.solve(solution, cea.HP, hc, self.heatingStates.P[1] / 100000, massFracs)
@@ -520,7 +556,28 @@ class Cycle: # should be valid for both rankine and brayton
                 self.intermediates.extend(get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["h", "P"]))
 
         # boiler / combustion chamber
-        self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["T", "P"]))
+        
+        if self.heatingStates.h[0] != None and self.heatingStates.h[0] != self.postTurbStates.h[-1]: # if heat exchange before combustion
+            try: # heat exchanger process
+                self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.heatingStates, 0, ["s", "P"]))
+                print("success 1a")
+            except:
+                self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.heatingStates, 0, ["T", "P"]))
+                print("fail 1a")
+            try: # combustion process
+                self.intermediates.extend(get_intermediate_points(self.heatingStates, 1, self.preTurbStates, 0, ["T", "P"]))
+                print("success 1b")
+            except:
+                self.intermediates.extend(get_intermediate_points(self.heatingStates, 1, self.preTurbStates, 0, ["s", "P"]))
+                print("fail 1b")
+        
+        else: # single process combustion (no heat exchanges)
+            try:
+                self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["s", "P"]))
+                print("success 1c")
+            except:
+                self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["T", "P"]))
+                print("fail 1c")
         
         for i in range(0, len(self.preTurbStates.T)): # turbine
             self.intermediates.extend(get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"]))
@@ -529,7 +586,12 @@ class Cycle: # should be valid for both rankine and brayton
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"]))
         
         # condenser
-        self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["T", "P"]))
+        try:
+            self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"]))
+            print("success 2")
+        except:
+            self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["T", "P"]))
+            print("fail 2")
 
     
     def ts_diagram(self, ax=None, label=None, isRankine=False):
@@ -557,7 +619,7 @@ class Cycle: # should be valid for both rankine and brayton
         y = self.intermediates.T
         
         ax.plot(x, y)
-        #ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
+        ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
 
         if isRankine:
             original_xlim = ax.get_xlim()
@@ -600,12 +662,25 @@ class Cycle: # should be valid for both rankine and brayton
         y = self.intermediates.P
         
         ax.plot(x, y)
-        #ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
+        ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
         
         if label != None:
             ax.legend()
         plt.show(block=False)
         return ax
+
+
+    def mixture_pie_charts(self, title=None):
+        if self.addedFuelMassFrac != 0:
+            fig = plt.figure()
+            fig.suptitle(title)
+            axs = fig.subplots(1, 3)
+            self.preCompStates.fluid[0].pie_chart("Inlet", ax=axs[0])
+            self.heatingStates.fluid[1].pie_chart("Pre-Combustion", temp=self.heatingStates.T[1], ax=axs[1])
+            self.preTurbStates.fluid[0].pie_chart("Post-Combustion", temp=self.heatingStates.T[0], ax=axs[2])
+
+        else:
+            self.preCompStates.fluid[0].pie_chart(title, ax=axs[0])
 
 
 
@@ -614,8 +689,19 @@ class Cycle: # should be valid for both rankine and brayton
 
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')
-    
+
+
+    # testing pie charts
     """
+    AIR().pie_chart("Atmospheric")
+    
+    fig = plt.figure()
+    fig.suptitle("test combined mixture pie charts")
+    axs = fig.subplots(1, 2)
+    AIR().pie_chart("A", ax = axs[0])
+    AIR().pie_chart("B", temp=298, ax = axs[1])
+    """
+    
     testRankine = Cycle(1, 1, Mixture([["H2O", 1]]))
     testRankine.preCompStates.P = [8000]
     testRankine.preCompStates.X = [0]
@@ -647,7 +733,7 @@ if __name__ == "__main__":
     print(testRankine.efficiency())
     testRankine.ts_diagram(ax=rankineTS, label = "reheater")
     testRankine.pv_diagram(ax=rankinePV, label = "reheater")
-    """
+    
 
     testBrayton = Cycle(1, 1, AIR())
     testBrayton.preCompStates.P = [101325]
@@ -670,6 +756,8 @@ if __name__ == "__main__":
 
     braytonTS.set_title("Brayton Test Plot Ts")
     braytonPV.set_title("Brayton Test Plot Pv")
+
+    testBrayton.mixture_pie_charts("Test Brayton")
 
 
     """
