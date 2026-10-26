@@ -5,6 +5,8 @@ import CoolProp
 import matplotlib.pyplot as plt
 import math
 import copy
+import numpy as np
+import multiprocessing
 
 CEA_TO_COOLPROP_NAMES = {
     "CH4" : "Methane",
@@ -14,17 +16,31 @@ CEA_TO_COOLPROP_NAMES = {
     "CO2" : "CarbonDioxide",
     "CO" : "CarbonMonoxide",
     "H2O" : "Water",
-    "AIR" : "Air",
-    "Propane" : "Propane",
-    "Propylene" : "Propylene",
-    "Ethanol" : "Ethanol",
+    "H2O(L)" : "Water",
+    "H2O(cr)" : "Water",
 }
+
+KNOWN_CP_UNSUPPORTED = ["H", "OH"]
+
+def cea_to_cp_name(name):
+    if name in KNOWN_CP_UNSUPPORTED:
+        return None
+    try:
+        return CEA_TO_COOLPROP_NAMES[name]
+    except:
+        try:
+            M = cp.PropsSI("molar_mass", name)
+            return name
+        except:
+            print("Couldn't put into coolprop mixture:", name)
+            return None
 
 class Mixture:
     def __init__(self, data=None):
         self.data = data
 
     def to_cea(self, temperature, products_from_reactants=False):
+        print(self.data)
         names = []
         temps = []
         molFracs = []
@@ -52,13 +68,17 @@ class Mixture:
     def to_coolprop(self):
         mix = "HEOS::"
         for part in self.data:
-            mix += CEA_TO_COOLPROP_NAMES[part[0]] + "[" + str(part[1]) + "]" + "&"
+            cpName = cea_to_cp_name(part[0])
+            if cpName != None:
+                mix += cpName + "[" + str(part[1]) + "]" + "&"
         return mix[:-1]
 
     def from_cea(self, ceaData):
         self.data = []
         for species, fraction in ceaData.mole_fractions.items():
-            self.data.append([species, fraction[2]])
+            if fraction > 0.00001:
+                self.data.append([species, fraction])
+                print(species, fraction)
 
 class SetOfStates():
     def __init__(self, numStates, fluid = "Water"):
@@ -199,7 +219,44 @@ class SetOfStates():
 
 
 
-def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=100):
+def intermediate_points_worker(q, linearProperties, starts, ends, fluid, i, numPoints):
+    linValues = []
+    for j in range(0, len(linearProperties)):
+        val = starts[j] + (ends[j] - starts[j]) * i / numPoints
+        if linearProperties[j] == "D":
+            linValues.append(1 / val)
+        else:
+            linValues.append(val)
+
+    data = [i]
+    data.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    q.put(data)
+
+def intermediate_points_worker_pool(linearProperties, starts, ends, fluid, i, numPoints):
+    linValues = []
+    for j in range(0, len(linearProperties)):
+        val = starts[j] + (ends[j] - starts[j]) * i / numPoints
+        if linearProperties[j] == "D":
+            linValues.append(1 / val)
+        else:
+            linValues.append(val)
+
+    data = []
+    data.append(cp.PropsSI("T", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("P", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(1 / cp.PropsSI("D", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    data.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid))
+    return data
+
+
+def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=20):
     # for linearProperties use [most changed, constant when ideal]
     intermediates = SetOfStates(0)
     starts = [fromSet.get_property(fromI, symbol) for symbol in linearProperties]
@@ -214,8 +271,21 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
             linearProperties[i] = "Q"
         if linearProperties[i] == "v":
             linearProperties[i] = "D"
+
+    #q = multiprocessing.Queue()
+    #processes = []
+    fluid = fromSet.fluid[fromI].to_coolprop()
+
+    tasks = [(linearProperties, starts, ends, fluid, i, numPoints) for i in range(1, numPoints)]
+    with multiprocessing.Pool(processes=3) as pool:
+        fullData = pool.starmap(intermediate_points_worker_pool, tasks)
     
-    for i in range(0, numPoints):
+    #for i in range(0, numPoints):
+        #p = multiprocessing.Process(target=intermediate_points_worker, args=(q,linearProperties.copy(), starts.copy(), ends.copy(), fluid, i, numPoints))
+        #p.start()
+        #processes.append(p)
+
+        """
         linValues = []
         for j in range(0, len(linearProperties)):
             val = starts[j] + (ends[j] - starts[j]) * i / numPoints
@@ -231,6 +301,48 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
         intermediates.s.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
         intermediates.X.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fromSet.fluid[fromI].to_coolprop()))
         intermediates.fluid.append(fromSet.fluid[fromI])
+        """
+
+    #print("test 1")
+    
+    #fullData = [None] * numPoints
+    
+    #for p in processes:
+    #    data = q.get()
+    #    index = data[0]
+    #    fullData[index] = data[1:]
+    #    print("got data")
+
+        
+
+    #print("test 2")
+
+    #q.close()
+    #print("test 3")
+    #q.join_thread()
+    #print("test 4")
+    
+    #for p in processes:
+    #    p.join()
+    #print("test 5")
+
+    
+
+    intermediates.extend(fromSet.get_point(fromI))
+
+    for point in fullData:
+        intermediates.T.append(point[0])
+        intermediates.P.append(point[1])
+        intermediates.v.append(point[2])
+        intermediates.h.append(point[3])
+        intermediates.s.append(point[4])
+        intermediates.X.append(point[5])
+        intermediates.fluid.append(fromSet.fluid[fromI])
+        
+    intermediates.extend(toSet.get_point(toI))
+    
+        
+    
     return intermediates
 
 
@@ -387,16 +499,19 @@ class Cycle: # should be valid for both rankine and brayton
 
 
     def combust(self):
-        reactants, massFracs, temps = self.heatingStates.fluid[1].to_cea(self.heatingStates.T)
+        reactants, massFracs, temps = self.heatingStates.fluid[1].to_cea(self.heatingStates.T[1])
         products = self.heatingStates.fluid[1].to_cea(self.heatingStates.T[1], products_from_reactants=True)[0]
         solver = cea.EqSolver(products, reactants=reactants, transport=True)
         solution = cea.EqSolution(solver)
-        hc = reactants.calc_property(cea.ENTHALPY, massFracs, temps) / cea.R
-        solver.solve(solution, massFracs, self.heatingStates.P[1], hc=hc, mode="HP")
+        print(temps)
+        massFracs = np.array(massFracs)
+        hc = reactants.calc_property(cea.ENTHALPY, massFracs, np.array(temps)) / cea.R
+        #solver.solve(solution, massFracs, self.heatingStates.P[1], hc=hc, mode="HP")
+        solver.solve(solution, cea.HP, hc, self.heatingStates.P[1] / 100000, massFracs)
 
         
         #solution = cea.EqSolution(solver, pressure=self.heatingStates.P[1], mode='hp')
-        self.preTurbStates.T[0] = solution.temperature
+        self.preTurbStates.T[0] = solution.T
         products = Mixture()
         products.from_cea(solution)
         self.preTurbStates.fluid[0] = products
@@ -548,93 +663,101 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
-testRankine = Cycle(1, 1, Mixture([["H2O", 1]]))
-testRankine.preCompStates.P = [8000]
-testRankine.preCompStates.X = [0]
-testRankine.postCompStates.P = [8000000]
-testRankine.preTurbStates.T = [600]
-testRankine.preTurbStates.P = [8000000]
-testRankine.postTurbStates.P = [8000]
-testRankine.turbineEfficiencies[0] = 1
-testRankine.compressorEfficiencies[0] = 0.7
-
-testRankine.solve_cp()
-print(testRankine.efficiency())
-rankineTS = testRankine.ts_diagram(label="unmodified", isRankine=True)
-rankinePV = testRankine.pv_diagram(label="unmodified", isRankine=True)
-
-rankineTS.set_title("Rankine Test Plot Ts")
-rankinePV.set_title("Rankine Test Plot Pv")
-
-testRankine = Cycle(1, 2, Mixture([["H2O", 1]]))
-testRankine.preCompStates.P = [8000]
-testRankine.preCompStates.X = [0]
-testRankine.postCompStates.P = [8000000]
-testRankine.preTurbStates.T = [600, 600]
-testRankine.preTurbStates.P = [8000000, 4000000]
-testRankine.postTurbStates.P = [4000000, 8000]
-testRankine.turbineEfficiencies = [0.7, 0.7]
-
-testRankine.solve_cp()
-print(testRankine.efficiency())
-testRankine.ts_diagram(ax=rankineTS, label = "reheater")
-testRankine.pv_diagram(ax=rankinePV, label = "reheater")
 
 
-testBrayton = Cycle(1, 1, Mixture([["O2", 1]]))
-testBrayton.preCompStates.P = [101325]
-testBrayton.postCompStates.P = [500000]
-testBrayton.preCompStates.T = [298]
-#testBrayton.preTurbStates.T = [600]
-testBrayton.preTurbStates.P = [500000]
-testBrayton.postTurbStates.P = [101325]
-#testBrayton.turbineEfficiencies = [0.9]
-#testBrayton.compressorEfficiencies = [0.9]
+if __name__ == "__main__":
+    multiprocessing.set_start_method('spawn')
+    
+    """
+    testRankine = Cycle(1, 1, Mixture([["H2O", 1]]))
+    testRankine.preCompStates.P = [8000]
+    testRankine.preCompStates.X = [0]
+    testRankine.postCompStates.P = [8000000]
+    testRankine.preTurbStates.T = [600]
+    testRankine.preTurbStates.P = [8000000]
+    testRankine.postTurbStates.P = [8000]
+    testRankine.turbineEfficiencies[0] = 1
+    testRankine.compressorEfficiencies[0] = 0.7
 
-testBrayton.calculate_pre_combustion_heat_exchange(30000)
-testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.1, 0.9)
-testBrayton.combust()
+    testRankine.solve_cp()
+    print(testRankine.efficiency())
+    rankineTS = testRankine.ts_diagram(label="unmodified", isRankine=True)
+    rankinePV = testRankine.pv_diagram(label="unmodified", isRankine=True)
 
-testBrayton.solve_cp()
-braytonTS = testBrayton.ts_diagram(label="isentropic")
-braytonPV = testBrayton.pv_diagram(label="isentropic")
-print(testBrayton.efficiency())
+    rankineTS.set_title("Rankine Test Plot Ts")
+    rankinePV.set_title("Rankine Test Plot Pv")
 
-braytonTS.set_title("Brayton Test Plot Ts")
-braytonPV.set_title("Brayton Test Plot Pv")
+    testRankine = Cycle(1, 2, Mixture([["H2O", 1]]))
+    testRankine.preCompStates.P = [8000]
+    testRankine.preCompStates.X = [0]
+    testRankine.postCompStates.P = [8000000]
+    testRankine.preTurbStates.T = [600, 600]
+    testRankine.preTurbStates.P = [8000000, 4000000]
+    testRankine.postTurbStates.P = [4000000, 8000]
+    testRankine.turbineEfficiencies = [0.7, 0.7]
+
+    testRankine.solve_cp()
+    print(testRankine.efficiency())
+    testRankine.ts_diagram(ax=rankineTS, label = "reheater")
+    testRankine.pv_diagram(ax=rankinePV, label = "reheater")
+    """
+
+    testBrayton = Cycle(1, 1, Mixture([["O2", 1]]))
+    testBrayton.preCompStates.P = [101325]
+    testBrayton.postCompStates.P = [500000]
+    testBrayton.preCompStates.T = [298]
+    #testBrayton.preTurbStates.T = [600]
+    testBrayton.preTurbStates.P = [500000]
+    testBrayton.postTurbStates.P = [101325]
+    #testBrayton.turbineEfficiencies = [0.9]
+    #testBrayton.compressorEfficiencies = [0.9]
+
+    testBrayton.calculate_pre_combustion_heat_exchange(30000)
+    testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.01, 0.9)
+    testBrayton.combust()
+
+    #testBrayton.solve_cp()
+    print("test")
+    braytonTS = testBrayton.ts_diagram(label="isentropic")
+    braytonPV = testBrayton.pv_diagram(label="isentropic")
+    print(testBrayton.efficiency())
+
+    braytonTS.set_title("Brayton Test Plot Ts")
+    braytonPV.set_title("Brayton Test Plot Pv")
 
 
-testBrayton = Cycle(1, 1, Mixture([["AIR", 1]]))
-testBrayton.preCompStates.P = [101325]
-testBrayton.postCompStates.P = [500000]
-testBrayton.preCompStates.T = [298]
-testBrayton.preTurbStates.T = [600]
-testBrayton.preTurbStates.P = [500000]
-testBrayton.postTurbStates.P = [101325]
-testBrayton.turbineEfficiencies = [0.7]
-testBrayton.compressorEfficiencies = [0.7]
+    """
+    testBrayton = Cycle(1, 1, Mixture([["AIR", 1]]))
+    testBrayton.preCompStates.P = [101325]
+    testBrayton.postCompStates.P = [500000]
+    testBrayton.preCompStates.T = [298]
+    testBrayton.preTurbStates.T = [600]
+    testBrayton.preTurbStates.P = [500000]
+    testBrayton.postTurbStates.P = [101325]
+    testBrayton.turbineEfficiencies = [0.7]
+    testBrayton.compressorEfficiencies = [0.7]
 
-testBrayton.solve_cp()
-print(testBrayton.efficiency())
-testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor")
-testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor")
+    testBrayton.solve_cp()
+    print(testBrayton.efficiency())
+    testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor")
+    testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor")
 
 
-testBrayton = Cycle(2, 2, Mixture([["AIR", 1]]))
-testBrayton.preCompStates.P = [101325, 250000]
-testBrayton.postCompStates.P = [250000, 500000]
-testBrayton.preCompStates.T = [298, 298]
-testBrayton.preTurbStates.T = [600, 600]
-testBrayton.preTurbStates.P = [500000, 250000]
-testBrayton.postTurbStates.P = [250000, 101325]
-testBrayton.turbineEfficiencies = [0.7, 0.7]
-testBrayton.compressorEfficiencies = [0.7, 0.7]
+    testBrayton = Cycle(2, 2, Mixture([["AIR", 1]]))
+    testBrayton.preCompStates.P = [101325, 250000]
+    testBrayton.postCompStates.P = [250000, 500000]
+    testBrayton.preCompStates.T = [298, 298]
+    testBrayton.preTurbStates.T = [600, 600]
+    testBrayton.preTurbStates.P = [500000, 250000]
+    testBrayton.postTurbStates.P = [250000, 101325]
+    testBrayton.turbineEfficiencies = [0.7, 0.7]
+    testBrayton.compressorEfficiencies = [0.7, 0.7]
 
-testBrayton.solve_cp()
-print(testBrayton.efficiency())
-testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor with intercooler and reheating")
-testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor with intercooler and reheating")
-
+    testBrayton.solve_cp()
+    print(testBrayton.efficiency())
+    testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor with intercooler and reheating")
+    testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor with intercooler and reheating")
+    """
 
 
 
