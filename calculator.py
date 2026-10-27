@@ -75,8 +75,8 @@ class Mixture:
         return [mix, massFracs, temps]
 
     def to_coolprop(self):
-        if self.data == AIR().data:
-            return "Air"
+        #if self.data == AIR().data:
+        #    return "Air"
         filtered = Mixture()
         mix = "HEOS::"
         self.sort()
@@ -108,7 +108,6 @@ class Mixture:
         for species, fraction in ceaData.mole_fractions.items():
             if fraction > 0.00001:
                 self.data.append([species, fraction])
-                print(species, fraction)
         self.normalize()
 
     def normalize(self):
@@ -117,6 +116,8 @@ class Mixture:
             n_tot += part[1]
         for i in range(0, len(self.data)):
             self.data[i][1] = self.data[i][1] / n_tot
+        if n_tot < 0.95:
+            print("Warning:", str(round(100 * (1-n_tot), 1)), "% of moles of mixture were filtered out")
 
     def sort(self):
         for i in range(0, len(self.data)):
@@ -323,7 +324,7 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, flui
     return data
 
 
-def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=10):
+def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=5):
     # for linearProperties use [most changed, constant when ideal]
     intermediates = SetOfStates(0)
     starts = [fromSet.get_property(fromI, symbol) for symbol in linearProperties]
@@ -571,6 +572,8 @@ class Cycle: # should be valid for both rankine and brayton
 
     def update_intermediates(self):
         self.intermediates = SetOfStates(0)
+
+        print("test 1")
         
         for i in range(0, len(self.preCompStates.T)): # compressor
             self.intermediates.extend(get_intermediate_points(self.preCompStates, i, self.postCompStates, i, ["h", "s"]))
@@ -578,13 +581,14 @@ class Cycle: # should be valid for both rankine and brayton
             if i+1 < len(self.preCompStates.T): # intercooling
                 self.intermediates.extend(get_intermediate_points(self.postCompStates, i, self.preCompStates, i+1, ["h", "P"]))
 
+        print("test 2")
         # boiler / combustion chamber
         
         if self.heatingStates.h[0] != None and self.heatingStates.h[0] != self.postTurbStates.h[-1]: # if heat exchange before combustion
             # heat exchanger process:
             self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.heatingStates, 0, ["s", "P"]))
             # injection process:
-            self.intermediates.extend(get_intermediate_points(self.heatingStates, 0, self.heatingStates, 1, ["T", "P"], numPoints=5))
+            self.intermediates.extend(get_intermediate_points(self.heatingStates, 0, self.heatingStates, 1, ["T", "P"], numPoints=2))
             # combustion process:
             self.intermediates.extend(get_intermediate_points(self.heatingStates, 1, self.preTurbStates, 0, ["T", "P"]))
         
@@ -596,6 +600,8 @@ class Cycle: # should be valid for both rankine and brayton
                 self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["T", "P"]))
                 print("fail 1c")
         
+        print("test 3")
+        
         for i in range(0, len(self.preTurbStates.T)): # turbine
             self.intermediates.extend(get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"]))
 
@@ -603,6 +609,7 @@ class Cycle: # should be valid for both rankine and brayton
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"]))
 
 
+        print("test 4")
         
         # condenser
         separateChemistryStep = True
@@ -618,7 +625,7 @@ class Cycle: # should be valid for both rankine and brayton
             # cooling:
             self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, intermediateStep, 0, ["T", "P"]))
             # undoing chemical mixing
-            self.intermediates.extend(get_intermediate_points(intermediateStep, 0, self.preCompStates, 0, ["T", "P"], numPoints=5))
+            self.intermediates.extend(get_intermediate_points(intermediateStep, 0, self.preCompStates, 0, ["T", "P"], numPoints=2))
 
         else: # single step
             try:
@@ -726,6 +733,18 @@ class Cycle: # should be valid for both rankine and brayton
 
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')
+
+    # implement these errors later:
+
+    a = cp.PropsSI("Smass", "P", 101325, "T", 298, AIR().to_coolprop())
+    b = cp.PropsSI("Smass", "P", 101325, "T", 298, "Air")
+    print("s:", a, b, a-b)
+    a = cp.PropsSI("Hmass", "P", 101325, "T", 298, AIR().to_coolprop())
+    b = cp.PropsSI("Hmass", "P", 101325, "T", 298, "Air")
+    print("h:", a, b, a-b)
+    a = 1 / cp.PropsSI("D", "P", 101325, "T", 298, AIR().to_coolprop())
+    b = 1 / cp.PropsSI("D", "P", 101325, "T", 298, "Air")
+    print("v:", a, b, a-b)
 
 
     # testing pie charts
