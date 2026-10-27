@@ -20,10 +20,15 @@ CEA_TO_COOLPROP_NAMES = {
     "H2O(cr)" : "Water",
     "Ar" : "Argon",
     "Ne" : "Neon",
-    "NO" : "Nitrogen",
 }
 
-KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO"]
+KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO", "C(gr)"]
+
+# having these pairs of molecules in a mixture crashes coolprop:
+COOLPROP_INCOMPATIBLE_PAIRS = [
+    ["Argon", "Neon"],
+    ["Methane", "NH3"],
+]
 
 def cea_to_cp_name(name):
     if name in KNOWN_CP_UNSUPPORTED:
@@ -74,14 +79,18 @@ class Mixture:
             return "Air"
         filtered = Mixture()
         mix = "HEOS::"
+        self.sort()
         for part in self.data:
             cpName = cea_to_cp_name(part[0])
             if cpName != None:
-                if cpName == "Argon" and "Neon" in mix:
-                    pass
-                if cpName == "Neon" and "Argon" in mix:
-                    pass
-                else:
+                conflicts = False
+                for pair in COOLPROP_INCOMPATIBLE_PAIRS:
+                    if cpName == pair[0] and pair[1] in mix:
+                        conflicts = True
+                    if cpName == pair[1] and pair[0] in mix:
+                        conflicts = True
+                
+                if not conflicts:
                     filtered.data.append(part)
                     mix += cpName + "[" + str(part[1]) + "]" + "&"
 
@@ -109,6 +118,13 @@ class Mixture:
         for i in range(0, len(self.data)):
             self.data[i][1] = self.data[i][1] / n_tot
 
+    def sort(self):
+        for i in range(0, len(self.data)):
+            self.data[i] = [self.data[i][1], self.data[i]]
+        self.data = sorted(self.data, reverse=True)
+        for i in range(0, len(self.data)):
+            self.data[i] = self.data[i][1]
+
     def pie_chart(self, title, temp=None, ax=None):
         title += " Mole Fractions"
         fracs = []
@@ -116,9 +132,9 @@ class Mixture:
         for part in self.data:
             fracs.append(part[1])
             if len(part) > 2:
-                labels.append(part[0] + "  T = " + str(part[2]) + " K  (" + str(round(100*part[1], 3)) + "%)")
+                labels.append(part[0] + "  T = " + str(round(part[2], 2)) + " K  (" + str(round(100*part[1], 3)) + "%)")
             elif temp != None:
-                labels.append(part[0] + "  T = " + str(temp) + " K  (" + str(round(100*part[1], 3)) + "%)")
+                labels.append(part[0] + "  T = " + str(round(temp, 2)) + " K  (" + str(round(100*part[1], 3)) + "%)")
             else:
                 labels.append(part[0] + "  (" + str(round(100*part[1], 3)) + "%)")
 
@@ -126,7 +142,8 @@ class Mixture:
             ax = plt.figure().subplots()
         wedges = ax.pie(fracs)[0]
         ax.set_title(title)
-        ax.legend(wedges, labels)
+        ax.legend(wedges, labels, loc="upper center", bbox_to_anchor=(0.5, 0))
+        plt.tight_layout()
         plt.show(block=False)
 
 def AIR():
@@ -160,7 +177,7 @@ class SetOfStates():
         point.h[0] = self.h[i]
         point.s[0] = self.s[i]
         point.X[0] = self.X[i]
-        point.fluid[0] = self.fluid[i]
+        point.fluid[0] = copy.deepcopy(self.fluid[i])
         return point
 
     def solve_points(self):
@@ -306,7 +323,7 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, flui
     return data
 
 
-def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=20):
+def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=10):
     # for linearProperties use [most changed, constant when ideal]
     intermediates = SetOfStates(0)
     starts = [fromSet.get_property(fromI, symbol) for symbol in linearProperties]
@@ -510,6 +527,12 @@ class Cycle: # should be valid for both rankine and brayton
         products = Mixture()
         products.from_cea(solution)
         self.preTurbStates.fluid[0] = products
+        self.heatingStates.s[1] = None
+        self.heatingStates.h[1] = None
+        self.heatingStates.v[1] = None
+        self.heatingStates.X[1] = None
+        self.heatingStates.solve_points()
+        
         self.propagate_gas_from_combustor()
         self.solve_cp()
         
@@ -558,18 +581,12 @@ class Cycle: # should be valid for both rankine and brayton
         # boiler / combustion chamber
         
         if self.heatingStates.h[0] != None and self.heatingStates.h[0] != self.postTurbStates.h[-1]: # if heat exchange before combustion
-            try: # heat exchanger process
-                self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.heatingStates, 0, ["s", "P"]))
-                print("success 1a")
-            except:
-                self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.heatingStates, 0, ["T", "P"]))
-                print("fail 1a")
-            try: # combustion process
-                self.intermediates.extend(get_intermediate_points(self.heatingStates, 1, self.preTurbStates, 0, ["T", "P"]))
-                print("success 1b")
-            except:
-                self.intermediates.extend(get_intermediate_points(self.heatingStates, 1, self.preTurbStates, 0, ["s", "P"]))
-                print("fail 1b")
+            # heat exchanger process:
+            self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.heatingStates, 0, ["s", "P"]))
+            # injection process:
+            self.intermediates.extend(get_intermediate_points(self.heatingStates, 0, self.heatingStates, 1, ["T", "P"], numPoints=5))
+            # combustion process:
+            self.intermediates.extend(get_intermediate_points(self.heatingStates, 1, self.preTurbStates, 0, ["T", "P"]))
         
         else: # single process combustion (no heat exchanges)
             try:
@@ -584,14 +601,32 @@ class Cycle: # should be valid for both rankine and brayton
 
             if i+1 < len(self.preTurbStates.T): # reheating
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"]))
+
+
         
         # condenser
-        try:
-            self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"]))
-            print("success 2")
-        except:
-            self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["T", "P"]))
-            print("fail 2")
+        separateChemistryStep = True
+
+        
+        if self.postTurbStates.fluid[-1].data != self.preCompStates.fluid[0].data and separateChemistryStep:
+            intermediateStep = SetOfStates(1)
+            intermediateStep.P[0] = self.preCompStates.P[0]
+            intermediateStep.T[0] = self.preCompStates.T[0]
+            intermediateStep.fluid[0] = self.postTurbStates.fluid[-1]
+            intermediateStep.solve_points()
+
+            # cooling:
+            self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, intermediateStep, 0, ["T", "P"]))
+            # undoing chemical mixing
+            self.intermediates.extend(get_intermediate_points(intermediateStep, 0, self.preCompStates, 0, ["T", "P"], numPoints=5))
+
+        else: # single step
+            try:
+                self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"]))
+                print("success 2c")
+            except:
+                self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["T", "P"]))
+                print("fail 2c")
 
     
     def ts_diagram(self, ax=None, label=None, isRankine=False):
@@ -687,6 +722,8 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
+
+
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')
 
@@ -700,8 +737,13 @@ if __name__ == "__main__":
     axs = fig.subplots(1, 2)
     AIR().pie_chart("A", ax = axs[0])
     AIR().pie_chart("B", temp=298, ax = axs[1])
+    
+    import sys
+    sys.exit()
     """
     
+
+    """
     testRankine = Cycle(1, 1, Mixture([["H2O", 1]]))
     testRankine.preCompStates.P = [8000]
     testRankine.preCompStates.X = [0]
@@ -733,7 +775,7 @@ if __name__ == "__main__":
     print(testRankine.efficiency())
     testRankine.ts_diagram(ax=rankineTS, label = "reheater")
     testRankine.pv_diagram(ax=rankinePV, label = "reheater")
-    
+    """
 
     testBrayton = Cycle(1, 1, AIR())
     testBrayton.preCompStates.P = [101325]
@@ -742,11 +784,9 @@ if __name__ == "__main__":
     #testBrayton.preTurbStates.T = [600]
     testBrayton.preTurbStates.P = [500000]
     testBrayton.postTurbStates.P = [101325]
-    #testBrayton.turbineEfficiencies = [0.9]
-    #testBrayton.compressorEfficiencies = [0.9]
 
-    testBrayton.calculate_pre_combustion_heat_exchange(30000)
-    testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.01, 0.9)
+    testBrayton.calculate_pre_combustion_heat_exchange(100000)
+    testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.08, 0.9)
     testBrayton.combust()
 
     #testBrayton.solve_cp()
