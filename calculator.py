@@ -75,8 +75,9 @@ class Mixture:
         return [mix, massFracs, temps]
 
     def to_coolprop(self):
-        #if self.data == AIR().data:
-        #    return "Air"
+        if self.data == AIR().data:
+            return "Air"
+        
         filtered = Mixture()
         mix = "HEOS::"
         self.sort()
@@ -160,8 +161,30 @@ class SetOfStates():
         self.s = [None] * numStates
         self.X = [None] * numStates
         self.fluid = [fluid] * numStates
+        self.consistent = False # True if "Air" h and s were converted to match other mixtures
+
+    def make_consistent(self, newConsistency):
+        if self.consistent == newConsistency:
+            return
+
+        if newConsistency == True:
+            for i in range(0, len(self.T)):
+                if self.fluid[i].data == AIR().data:
+                    self.h[i] -= 125886
+                    self.s[i] += 2978
+
+        else:
+            for i in range(0, len(self.T)):
+                if self.fluid[i].data == AIR().data:
+                    self.h[i] += 125886
+                    self.s[i] -= 2978
+        self.consistent = newConsistency
 
     def extend(self, otherState):
+        selfConsistent = self.consistent
+        otherConsistent = otherState.consistent
+        self.make_consistent(True)
+        otherState.make_consistent(True)
         self.T.extend(otherState.T)
         self.P.extend(otherState.P)
         self.v.extend(otherState.v)
@@ -169,6 +192,8 @@ class SetOfStates():
         self.s.extend(otherState.s)
         self.X.extend(otherState.X)
         self.fluid.extend(otherState.fluid)
+        self.make_consistent(selfConsistent)
+        otherState.make_consistent(otherConsistent)
 
     def get_point(self, i):
         point = SetOfStates(1)
@@ -306,6 +331,10 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, flui
     data.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
     data.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
     data.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid1))
+    
+    if fluid1 == "Air":
+            data[3] -= 125866
+            data[4] += 2978
 
     if fluid1 != fluid2: # interpolating between fluid properties if there is a chemical change during a process
                                    # noticable discrete jumps are visible on Ts and Pv diagrams if this is not done
@@ -316,6 +345,10 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, flui
         data2.append(cp.PropsSI("Hmass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
         data2.append(cp.PropsSI("Smass", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
         data2.append(cp.PropsSI("Q", linearProperties[0], linValues[0], linearProperties[1], linValues[1], fluid2))
+
+        if fluid2 == "Air":
+            data2[3] -= 125866
+            data2[4] += 2978
         
 
         for k in range(0, len(data)):
@@ -324,8 +357,14 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, flui
     return data
 
 
-def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=5):
+def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoints=30):
     # for linearProperties use [most changed, constant when ideal]
+
+    fromConsistent = fromSet.consistent
+    toConsistent = toSet.consistent
+    fromSet.make_consistent(False)
+    toSet.make_consistent(False)
+    
     intermediates = SetOfStates(0)
     starts = [fromSet.get_property(fromI, symbol) for symbol in linearProperties]
     ends = [toSet.get_property(toI, symbol) for symbol in linearProperties]
@@ -361,6 +400,19 @@ def get_intermediate_points(fromSet, fromI, toSet, toI, linearProperties, numPoi
         intermediates.fluid.append(fromSet.fluid[fromI])
         
     intermediates.extend(toSet.get_point(toI))
+    intermediates.consistent = True
+
+    if fluid1 == "Air":
+        intermediates.h[0] -= 125866
+        intermediates.s[0] += 2978
+
+    if fluid2 == "Air":
+        intermediates.h[-1] -= 125866
+        intermediates.s[-1] += 2978
+
+    
+    fromSet.make_consistent(fromConsistent)
+    toSet.make_consistent(toConsistent)
     return intermediates
 
 
@@ -612,7 +664,8 @@ class Cycle: # should be valid for both rankine and brayton
         print("test 4")
         
         # condenser
-        separateChemistryStep = True
+        separateChemistryStep = False
+        dontDrawComplexBraytonCooling = True
 
         
         if self.postTurbStates.fluid[-1].data != self.preCompStates.fluid[0].data and separateChemistryStep:
@@ -627,7 +680,7 @@ class Cycle: # should be valid for both rankine and brayton
             # undoing chemical mixing
             self.intermediates.extend(get_intermediate_points(intermediateStep, 0, self.preCompStates, 0, ["T", "P"], numPoints=2))
 
-        else: # single step
+        elif self.postTurbStates.fluid[-1].data == self.preCompStates.fluid[0].data or not dontDrawComplexBraytonCooling: # single step
             try:
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"]))
                 print("success 2c")
@@ -635,9 +688,12 @@ class Cycle: # should be valid for both rankine and brayton
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["T", "P"]))
                 print("fail 2c")
 
+        self.intermediates.make_consistent(True)
+
     
     def ts_diagram(self, ax=None, label=None, isRankine=False):
         allPoints = self.combined_states()
+        allPoints.make_consistent(True)
         
         if ax == None:
             ax = plt.figure().add_subplot()
@@ -681,6 +737,7 @@ class Cycle: # should be valid for both rankine and brayton
     
     def pv_diagram(self, ax=None, label=None, isRankine=False):
         allPoints = self.combined_states()
+        allPoints.make_consistent(True)
         
         if ax == None:
             ax = plt.figure().add_subplot()
@@ -736,6 +793,15 @@ if __name__ == "__main__":
 
     # implement these errors later:
 
+    a = cp.PropsSI("Smass", "P", 101325, "T", 298, AIR().to_coolprop())
+    b = cp.PropsSI("Smass", "P", 101325, "T", 298, "Air")
+    print("s:", a, b, a-b)
+    a = cp.PropsSI("Smass", "P", 201325, "T", 298, AIR().to_coolprop())
+    b = cp.PropsSI("Smass", "P", 201325, "T", 298, "Air")
+    print("s:", a, b, a-b)
+    a = cp.PropsSI("Smass", "P", 101325, "T", 700, AIR().to_coolprop())
+    b = cp.PropsSI("Smass", "P", 101325, "T", 700, "Air")
+    print("s:", a, b, a-b)
     a = cp.PropsSI("Smass", "P", 101325, "T", 298, AIR().to_coolprop())
     b = cp.PropsSI("Smass", "P", 101325, "T", 298, "Air")
     print("s:", a, b, a-b)
