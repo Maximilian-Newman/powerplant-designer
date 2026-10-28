@@ -22,7 +22,7 @@ CEA_TO_COOLPROP_NAMES = {
     "Ne" : "Neon",
 }
 
-KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO", "C(gr)"]
+KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO", "C(gr)", "O"]
 
 # having these pairs of molecules in a mixture crashes coolprop:
 COOLPROP_INCOMPATIBLE_PAIRS = [
@@ -178,6 +178,7 @@ class SetOfStates():
                 if self.fluid[i].data == AIR().data:
                     self.h[i] += 125886
                     self.s[i] -= 2978
+        
         self.consistent = newConsistency
 
     def extend(self, otherState):
@@ -207,6 +208,8 @@ class SetOfStates():
         return point
 
     def solve_points(self):
+        self.make_consistent(False)
+        
         for i in range(0, len(self.T)):
             knowns = []
             if self.T[i] != None:
@@ -471,12 +474,18 @@ class Cycle: # should be valid for both rankine and brayton
         
         self.externalFuelCompressionWork = 0 # work to pressurize fuel before injecting it into combustion chamber
         self.addedFuelMassFrac = 0
+        self.addefFuelInitialEnthalpy = 0
 
         self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
         self.intermediates = None
         
 
     def combined_states(self):
+        self.preCompStates.make_consistent(False)
+        self.postCompStates.make_consistent(False)
+        self.heatingStates.make_consistent(False)
+        self.preTurbStates.make_consistent(False)
+        self.postTurbStates.make_consistent(False)
         states = SetOfStates(0)
         for i in range(0, len(self.preCompStates.T)):
             states.extend(self.preCompStates.get_point(i))
@@ -540,6 +549,7 @@ class Cycle: # should be valid for both rankine and brayton
         h1 = h0 + (h1 - h0) / fuelCompressorEfficiency
         fuelTemp = cp.PropsSI("T", "P", self.heatingStates.P[0], "Hmass", h1, fuelMixture.to_coolprop())
         self.externalFuelCompressionWork = (h1 - h0) * fuelTotalMassFraction
+        self.addefFuelInitialEnthalpy = h0
 
         M_oxidiser = cp.PropsSI("molar_mass", "P", self.heatingStates.P[0], "T", self.heatingStates.T[0], self.heatingStates.fluid[0].to_coolprop())
         M_fuel = cp.PropsSI("molar_mass", "P", self.heatingStates.P[0], "T", fuelTemp, fuelMixture.to_coolprop())
@@ -590,35 +600,120 @@ class Cycle: # should be valid for both rankine and brayton
         self.solve_cp()
         
         
-        
 
-    def q_in(self):
-        q = abs(self.preTurbStates.h[0] - self.postCompStates.h[-1])
-        for i in range(1, len(self.preTurbStates.T)): # reheating q_in
-            q += abs(self.preTurbStates.h[i] - self.postTurbStates.h[i-1])
+    def compressor_works(self):
+        self.preCompStates.make_consistent(True)
+        self.postCompStates.make_consistent(True)
+        w = []
+        for i in range(0, len(self.preCompStates.T)):
+            w.append((self.postCompStates.h[i] - self.preCompStates.h[i]) * (1 - self.addedFuelMassFrac))
+        return w
+
+    def intercooler_heats(self):
+        self.preCompStates.make_consistent(True)
+        self.postCompStates.make_consistent(True)
+        q = []
+        for i in range(1, len(self.preCompStates.T)):
+            q.append((self.postCompStates.h[i-1] - self.preCompStates.h[i]) * (1 - self.addedFuelMassFrac))
         return q
 
-    def q_out(self):
-        q = abs(self.preCompStates.h[0] - self.postTurbStates.h[-1])
-        for i in range(1, len(self.preCompStates.T)): # intercooling q_out
-            q += abs(self.preCompStates.h[i] - self.postCompStates.h[i-1])
+    def turbine_works(self):
+        self.preTurbStates.make_consistent(True)
+        self.postTurbStates.make_consistent(True)
+        w = []
+        for i in range(0, len(self.preTurbStates.T)):
+            w.append(self.preTurbStates.h[i] - self.postTurbStates.h[i])
+        return w
+
+    def reheater_heats(self):
+        self.preTurbStates.make_consistent(True)
+        self.postTurbStates.make_consistent(True)
+        q = []
+        for i in range(1, len(self.preTurbStates.T)):
+            q.append(self.postTurbStates.h[i-1] - self.preTurbStates.h[i])
         return q
+
+    def return_heat(self):
+        self.postTurbStates.make_consistent(True)
+        self.preCompStates.make_consistent(True)
+        fuel = (self.postTurbStates.h[-1] - self.addefFuelInitialEnthalpy) * self.addedFuelMassFrac
+        air = (self.postTurbStates.h[-1] - self.preCompStates.h[0]) * (1 - self.addedFuelMassFrac)
+        return fuel + air
+
+    def heat_exchanger_heat(self):
+        self.postCompStates.make_consistent(True)
+        if self.addedFuelMassFrac == 0:
+            self.preTurbStates.make_consistent(True)
+            return self.preTurbStates.h[0] - self.postCompStates.h[-1]
+        else:
+            self.heatingStates.make_consistent(True)
+            return (self.heatingStates.h[0] - self.postCompStates.h[-1]) * (1 - self.addedFuelMassFrac)
+
+    def combustion_heat(self):
+        if self.addedFuelMassFrac == 0:
+            return 0
+        else:
+            self.heatingStates.make_consistent(True)
+            self.preTurbStates.make_consistent(True)
+            fuel = (self.preTurbStates.h[0] - self.addefFuelInitialEnthalpy - self.externalFuelCompressionWork) * self.addedFuelMassFrac
+            air = (self.preTurbStates.h[0] - self.heatingStates.h[0]) * (1 - self.addedFuelMassFrac)
+            return fuel + air
+
+    def q_in(self): # assuming heat exchanger source is external, not recycling heat
+        return self.heat_exchanger_heat() + self.combustion_heat() + sum(self.reheater_heats())
+
+    def q_out(self): # assuming no heat is recycled using a heat exchanger
+        return sum(self.intercooler_heats()) + self.return_heat()
 
     def w_in(self):
-        w = 0
-        for i in range(0, len(self.preCompStates.T)):
-            w += abs(self.postCompStates.h[i] - self.preCompStates.h[i]) * (1 - self.addedFuelMassFrac)
-        w += self.externalFuelCompressionWork
-        return w
+        return sum(self.compressor_works()) + self.externalFuelCompressionWork
 
     def w_out(self):
-        w = 0
-        for i in range(0, len(self.preTurbStates.T)):
-            w += abs(self.postTurbStates.h[i] - self.preTurbStates.h[i])
-        return w
+        return sum(self.turbine_works())
+
+    def w_net(self):
+        return self.w_out() - self.w_in()
 
     def efficiency(self):
-        return self.w_out() / (self.w_in() + self.q_in())
+        return self.w_net() / (self.w_in() + self.q_in()) # todo: account for recycled heat
+
+    def print_energy_calcs(self):
+        print()
+        print("---------------------------------------------------------------")
+        print()
+        print("Energy Calculations:")
+        print("All units in J/kg noramalized using total mass of air+fuel")
+        print()
+        print("Heat exchanger heat:", self.heat_exchanger_heat())
+        print("Combustion heat:", self.combustion_heat())
+        reheats = self.reheater_heats()
+        for i in range(0, len(reheats)):
+            print("Reheater", i+1, "heat:", reheats[i])
+        print("Total q_in:", self.q_in())
+        print()
+        intercools = self.intercooler_heats()
+        for i in range(0, len(intercools)):
+            print("Intercooler", i+1, "heat:", intercools[i])
+        print("Return heat:", self.return_heat())
+        print("Total q_out:", self.q_out())
+        print()
+        comps = self.compressor_works()
+        for i in range(0, len(comps)):
+            print("Compressor", i+1, "work:", comps[i])
+        print("Fuel compression work:", self.externalFuelCompressionWork)
+        print("Total w_in :", self.w_in())
+        print()
+        turbs = self.turbine_works()
+        for i in range(0, len(turbs)):
+            print("Turbine", i+1, "work:", turbs[i])
+        print("Total w_out:", self.w_out())
+        print()
+        print()
+        print("Net work:", self.w_net())
+        print("Efficiency", self.efficiency())
+        print()
+        print("---------------------------------------------------------------")
+        print()
 
 
 
@@ -668,7 +763,7 @@ class Cycle: # should be valid for both rankine and brayton
         dontDrawComplexBraytonCooling = True
 
         
-        if self.postTurbStates.fluid[-1].data != self.preCompStates.fluid[0].data and separateChemistryStep:
+        if self.postTurbStates.fluid[-1].data != self.preCompStates.fluid[0].data and separateChemistryStep and not dontDrawComplexBraytonCooling:
             intermediateStep = SetOfStates(1)
             intermediateStep.P[0] = self.preCompStates.P[0]
             intermediateStep.T[0] = self.preCompStates.T[0]
@@ -790,42 +885,6 @@ class Cycle: # should be valid for both rankine and brayton
 
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn')
-
-    # implement these errors later:
-
-    a = cp.PropsSI("Smass", "P", 101325, "T", 298, AIR().to_coolprop())
-    b = cp.PropsSI("Smass", "P", 101325, "T", 298, "Air")
-    print("s:", a, b, a-b)
-    a = cp.PropsSI("Smass", "P", 201325, "T", 298, AIR().to_coolprop())
-    b = cp.PropsSI("Smass", "P", 201325, "T", 298, "Air")
-    print("s:", a, b, a-b)
-    a = cp.PropsSI("Smass", "P", 101325, "T", 700, AIR().to_coolprop())
-    b = cp.PropsSI("Smass", "P", 101325, "T", 700, "Air")
-    print("s:", a, b, a-b)
-    a = cp.PropsSI("Smass", "P", 101325, "T", 298, AIR().to_coolprop())
-    b = cp.PropsSI("Smass", "P", 101325, "T", 298, "Air")
-    print("s:", a, b, a-b)
-    a = cp.PropsSI("Hmass", "P", 101325, "T", 298, AIR().to_coolprop())
-    b = cp.PropsSI("Hmass", "P", 101325, "T", 298, "Air")
-    print("h:", a, b, a-b)
-    a = 1 / cp.PropsSI("D", "P", 101325, "T", 298, AIR().to_coolprop())
-    b = 1 / cp.PropsSI("D", "P", 101325, "T", 298, "Air")
-    print("v:", a, b, a-b)
-
-
-    # testing pie charts
-    """
-    AIR().pie_chart("Atmospheric")
-    
-    fig = plt.figure()
-    fig.suptitle("test combined mixture pie charts")
-    axs = fig.subplots(1, 2)
-    AIR().pie_chart("A", ax = axs[0])
-    AIR().pie_chart("B", temp=298, ax = axs[1])
-    
-    import sys
-    sys.exit()
-    """
     
 
     """
@@ -871,10 +930,12 @@ if __name__ == "__main__":
     testBrayton.postTurbStates.P = [101325]
 
     testBrayton.calculate_pre_combustion_heat_exchange(100000)
-    testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.08, 0.9)
+    testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.02, 0.9)
     testBrayton.combust()
 
     #testBrayton.solve_cp()
+    testBrayton.print_energy_calcs()
+    
     braytonTS = testBrayton.ts_diagram(label="isentropic")
     braytonPV = testBrayton.pv_diagram(label="isentropic")
     print(testBrayton.efficiency())
