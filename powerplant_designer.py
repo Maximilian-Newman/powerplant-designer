@@ -477,6 +477,9 @@ class Cycle: # should be valid for both rankine and brayton
         self.addedFuelMassFrac = 0
         self.addefFuelInitialEnthalpy = 0
         self.recycledHeat = 0
+        self.closedFeedwaterMassRatio = 0
+        self.turbineMassRatios = [1] * numTurb # fraction left at each stage after removal from feedwater heater
+        self.closedFeedwaterExitEnthalpy = 0
 
         self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
         self.intermediates = None
@@ -526,8 +529,12 @@ class Cycle: # should be valid for both rankine and brayton
             elif self.postTurbStates.point_is_solved(i):
                 solve_point_inefficient(self.preTurbStates, i, self.postTurbStates, i, 1 / self.turbineEfficiencies[i])
 
-    def calculate_pre_combustion_heat_exchange(self, q_in):
+    def add_pre_combustion_heat_exchange(self, q_in):
         self.solve_cp()
+        
+        if self.heatingStates.h[0] != None:
+            q_in += self.heatingStates.h[0] - self.postCompStates.h[-1]
+        
         self.heatingStates.P[0] = self.postCompStates.P[-1]
         self.heatingStates.h[0] = self.postCompStates.h[-1] + q_in
         self.heatingStates.fluid[0] = self.postCompStates.fluid[-1]
@@ -537,10 +544,10 @@ class Cycle: # should be valid for both rankine and brayton
         self.heatingStates.solve_points()
         
 
-    def inject_fuel_after_compressor_no_propagation(self, fuelMixture, fuelTotalMassFraction, fuelCompressorEfficiency):
+    def inject_fuel_after_compressor(self, fuelMixture, fuelTotalMassFraction, fuelCompressorEfficiency):
         self.addedFuelMassFrac = fuelTotalMassFraction
         if not self.heatingStates.set_is_fully_solved():
-            self.calculate_pre_combustion_heat_exchange(0)
+            self.add_pre_combustion_heat_exchange(0)
             print("Assumed no pre-combustion heat exchange when injecting fuel")
 
         # compressing fuel from standard atmospheric conditions to same pressure as air at exit of compressor
@@ -579,7 +586,6 @@ class Cycle: # should be valid for both rankine and brayton
         products = self.heatingStates.fluid[1].to_cea(self.heatingStates.T[1], products_from_reactants=True)[0]
         solver = cea.EqSolver(products, reactants=reactants, transport=True)
         solution = cea.EqSolution(solver)
-        #print(temps)
         massFracs = np.array(massFracs)
         hc = reactants.calc_property(cea.ENTHALPY, massFracs, np.array(temps)) / cea.R
         solver.solve(solution, cea.HP, hc, self.heatingStates.P[1] / 100000, massFracs)
@@ -595,8 +601,64 @@ class Cycle: # should be valid for both rankine and brayton
         
         self.propagate_gas_from_combustor()
         self.solve_cp()
+
+    def set_closed_feedwater_heater(self, fraction, turbineIndex, removeReheater=True):
+        for i in range(turbineIndex + 1, len(self.preTurbStates.T)):
+            self.turbineMassRatios[i] -= fraction
+            if self.turbineMassRatios[i] <= 0:
+                print("ERROR: turbine", i, "mass ratio =", self.turbineMassRatios[i])
+
+        self.solve_cp()
+
+        if removeReheater:
+            self.preTurbStates.T[turbineIndex+1] = self.postTurbStates.T[turbineIndex]
+            self.preTurbStates.P[turbineIndex+1] = self.postTurbStates.P[turbineIndex]
+            self.preTurbStates.v[turbineIndex+1] = self.postTurbStates.v[turbineIndex]
+            self.preTurbStates.h[turbineIndex+1] = self.postTurbStates.h[turbineIndex]
+            self.preTurbStates.s[turbineIndex+1] = self.postTurbStates.s[turbineIndex]
+            self.preTurbStates.X[turbineIndex+1] = self.postTurbStates.X[turbineIndex]
+
+        
+        P = self.postTurbStates.P[turbineIndex]
+        h2 = cp.PropsSI("Hmass", "P", P, "Q", 0, self.postTurbStates.fluid[turbineIndex].to_coolprop())
+        heat = (self.postTurbStates.h[turbineIndex] - h2) * fraction
+        print("Closed Feedwater Heat:", heat)
+        #self.add_pre_combustion_heat_exchange(heat)
+        self.recycledHeat += heat
+        self.closedFeedwaterExitEnthalpy = h2
+
+    def propagate_assuming_no_pressure_losses(self):
+        if self.preCompStates.P[0] == None:
+            self.preCompStates.P[0] = self.postTurbStates.P[-1]
+        if self.postTurbStates.P[-1] == None:
+            self.postTurbStates.P[-1] = self.preCompStates.P[0]
+
+        if self.preTurbStates.P[0] == None:
+            self.preTurbStates.P[0] = self.postCompStates.P[-1]
+        if self.postCompStates.P[-1] == None:
+            self.postCompStates.P[-1] = self.preTurbStates.P[0]
+
+        for i in range(1, len(self.preCompStates.P)):
+            if self.preCompStates.P[i] == None:
+                self.preCompStates.P[i] = self.postCompStates.P[i-1]
+            if self.postCompStates.P[i-1] == None:
+                self.postCompStates.P[i-1] = self.preCompStates.P[i]
+
+        for i in range(1, len(self.preTurbStates.P)):
+            if self.preTurbStates.P[i] == None:
+                self.preTurbStates.P[i] = self.postTurbStates.P[i-1]
+            if self.postTurbStates.P[i-1] == None:
+                self.postTurbStates.P[i-1] = self.preTurbStates.P[i]
         
         
+
+
+
+
+
+
+
+
 
     def compressor_works(self):
         self.preCompStates.make_consistent(True)
@@ -619,7 +681,7 @@ class Cycle: # should be valid for both rankine and brayton
         self.postTurbStates.make_consistent(True)
         w = []
         for i in range(0, len(self.preTurbStates.T)):
-            w.append(self.preTurbStates.h[i] - self.postTurbStates.h[i])
+            w.append((self.preTurbStates.h[i] - self.postTurbStates.h[i]) * self.turbineMassRatios[i])
         return w
 
     def reheater_heats(self):
@@ -627,15 +689,17 @@ class Cycle: # should be valid for both rankine and brayton
         self.postTurbStates.make_consistent(True)
         q = []
         for i in range(1, len(self.preTurbStates.T)):
-            q.append(self.preTurbStates.h[i] - self.postTurbStates.h[i-1])
+            q.append((self.preTurbStates.h[i] - self.postTurbStates.h[i-1]) * self.turbineMassRatios[i])
         return q
 
     def return_heat(self):
         self.postTurbStates.make_consistent(True)
         self.preCompStates.make_consistent(True)
-        fuel = (self.postTurbStates.h[-1] - self.addefFuelInitialEnthalpy) * self.addedFuelMassFrac
-        air = (self.postTurbStates.h[-1] - self.preCompStates.h[0]) * (1 - self.addedFuelMassFrac)
-        return fuel + air
+        fuel = (self.postTurbStates.h[-1] - self.addefFuelInitialEnthalpy) * self.addedFuelMassFrac * self.turbineMassRatios[-1]
+        air = (self.postTurbStates.h[-1] - self.preCompStates.h[0]) * (1 - self.addedFuelMassFrac) * self.turbineMassRatios[-1]
+        feedwater = (self.closedFeedwaterExitEnthalpy - self.preCompStates.h[0]) * self.closedFeedwaterMassRatio
+        
+        return fuel + air + feedwater
 
     def heat_exchanger_heat(self):
         self.postCompStates.make_consistent(True)
@@ -672,7 +736,7 @@ class Cycle: # should be valid for both rankine and brayton
         return self.w_out() - self.w_in()
 
     def efficiency(self):
-        return self.w_net() / (self.w_in() + self.q_in() - self.recycledHeat)
+        return self.w_net() / (self.q_in() - self.recycledHeat)
 
     def back_work(self):
         return self.w_in() / self.w_out()
@@ -758,7 +822,8 @@ class Cycle: # should be valid for both rankine and brayton
             self.intermediates.extend(get_intermediate_points(self.preTurbStates, i, self.postTurbStates, i, ["h", "s"]))
 
             if i+1 < len(self.preTurbStates.T): # reheating
-                self.intermediates.extend(get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"]))
+                if self.postTurbStates.T[i] != self.preTurbStates.T[i+1]:
+                    self.intermediates.extend(get_intermediate_points(self.postTurbStates, i, self.preTurbStates, i+1, ["T", "P"]))
 
 
         #print("test 4")
@@ -902,110 +967,5 @@ def graph_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficien
     plt.scatter(fracs, efficiencies)
     plt.show(block=False)
 
-
-
-
-if __name__ == "__main__":
+def init():
     multiprocessing.set_start_method('spawn')
-    
-
-    testRankine = Cycle(1, 1, Mixture([["H2O", 1]]))
-    testRankine.preCompStates.P = [8000]
-    testRankine.preCompStates.X = [0]
-    testRankine.postCompStates.P = [8000000]
-    testRankine.preTurbStates.T = [600]
-    testRankine.preTurbStates.P = [8000000]
-    testRankine.postTurbStates.P = [8000]
-    testRankine.turbineEfficiencies[0] = 0.85
-    testRankine.compressorEfficiencies[0] = 0.8
-
-    testRankine.solve_cp()
-    rankineTS = testRankine.ts_diagram(label="unmodified", isRankine=True)
-    rankineTS.set_title("Rankine Test Plot Ts")
-    
-    print("Unmodified Rankine")
-    testRankine.print_energy_calcs()
-
-    print("Rankine with 1 reheater")
-
-    testRankine = Cycle(1, 2, Mixture([["H2O", 1]]))
-    testRankine.preCompStates.P = [8000]
-    testRankine.preCompStates.X = [0]
-    testRankine.postCompStates.P = [8000000]
-    testRankine.preTurbStates.T = [600, 600]
-    testRankine.preTurbStates.P = [8000000, 4000000]
-    testRankine.postTurbStates.P = [4000000, 8000]
-    testRankine.turbineEfficiencies = [0.85, 0.85]
-    testRankine.compressorEfficiencies = [0.8]
-
-    testRankine.solve_cp()
-    testRankine.print_energy_calcs()
-    testRankine.ts_diagram(ax=rankineTS, label = "reheater")
-
-    print("Brayton")
-
-    testBrayton = Cycle(1, 1, AIR())
-    testBrayton.preCompStates.P = [101325]
-    testBrayton.postCompStates.P = [500000]
-    testBrayton.preCompStates.T = [298]
-    #testBrayton.preTurbStates.T = [600]
-    testBrayton.preTurbStates.P = [500000]
-    testBrayton.postTurbStates.P = [101325]
-
-    testBrayton.calculate_pre_combustion_heat_exchange(100000)
-    graph_efficiency_vs_fuel_mass_frac(testBrayton, Mixture([["CH4", 1]]), 0.9, 0.04, 0.12, 30)
-    #import sys
-    #sys.exit()
-
-    testBrayton.inject_fuel_after_compressor_no_propagation(Mixture([["CH4", 1]]), 0.08, 0.9)
-    testBrayton.combust()
-
-    #testBrayton.solve_cp()
-    testBrayton.print_energy_calcs()
-    
-    braytonTS = testBrayton.ts_diagram(label="isentropic")
-    braytonPV = testBrayton.pv_diagram(label="isentropic")
-    #print(testBrayton.efficiency())
-
-    braytonTS.set_title("Brayton Test Plot Ts")
-    braytonPV.set_title("Brayton Test Plot Pv")
-
-    testBrayton.mixture_pie_charts("Test Brayton")
-
-
-    """
-    testBrayton = Cycle(1, 1, Mixture([["AIR", 1]]))
-    testBrayton.preCompStates.P = [101325]
-    testBrayton.postCompStates.P = [500000]
-    testBrayton.preCompStates.T = [298]
-    testBrayton.preTurbStates.T = [600]
-    testBrayton.preTurbStates.P = [500000]
-    testBrayton.postTurbStates.P = [101325]
-    testBrayton.turbineEfficiencies = [0.7]
-    testBrayton.compressorEfficiencies = [0.7]
-
-    testBrayton.solve_cp()
-    print(testBrayton.efficiency())
-    testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor")
-    testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor")
-
-
-    testBrayton = Cycle(2, 2, Mixture([["AIR", 1]]))
-    testBrayton.preCompStates.P = [101325, 250000]
-    testBrayton.postCompStates.P = [250000, 500000]
-    testBrayton.preCompStates.T = [298, 298]
-    testBrayton.preTurbStates.T = [600, 600]
-    testBrayton.preTurbStates.P = [500000, 250000]
-    testBrayton.postTurbStates.P = [250000, 101325]
-    testBrayton.turbineEfficiencies = [0.7, 0.7]
-    testBrayton.compressorEfficiencies = [0.7, 0.7]
-
-    testBrayton.solve_cp()
-    print(testBrayton.efficiency())
-    testBrayton.ts_diagram(ax=braytonTS, label="70% efficient turbine&compressor with intercooler and reheating")
-    testBrayton.pv_diagram(ax=braytonPV, label="70% efficient turbine&compressor with intercooler and reheating")
-    """
-
-
-
-
