@@ -154,7 +154,7 @@ def AIR():
     # from https://www.engineeringtoolbox.com/air-composition-d_212.html
 
 class SetOfStates():
-    def __init__(self, numStates, fluid = "Water"):
+    def __init__(self, numStates, fluid = None):
         self.T = [None] * numStates
         self.P = [None] * numStates
         self.v = [None] * numStates
@@ -480,6 +480,7 @@ class Cycle: # should be valid for both rankine and brayton
         self.closedFeedwaterMassRatio = 0
         self.turbineMassRatios = [1] * numTurb # fraction left at each stage after removal from feedwater heater
         self.closedFeedwaterExitEnthalpy = 0
+        self.closedFeedwaterHeatTransfer = 0
 
         self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
         self.intermediates = None
@@ -495,6 +496,14 @@ class Cycle: # should be valid for both rankine and brayton
         for i in range(0, len(self.preCompStates.T)):
             states.extend(self.preCompStates.get_point(i))
             states.extend(self.postCompStates.get_point(i))
+
+        if self.closedFeedwaterHeatTransfer != 0:
+            fwState = SetOfStates(1)
+            fwState.h[0] = self.postCompStates.h[-1] + self.closedFeedwaterHeatTransfer
+            fwState.P[0] = self.postCompStates.P[-1]
+            fwState.fluid[0] = self.postCompStates.fluid[-1]
+            fwState.solve_points()
+            states.extend(fwState)
 
         if self.heatingStates.set_is_fully_solved():
             states.extend(self.heatingStates)
@@ -602,7 +611,7 @@ class Cycle: # should be valid for both rankine and brayton
         self.propagate_gas_from_combustor()
         self.solve_cp()
 
-    def set_closed_feedwater_heater(self, fraction, turbineIndex, removeReheater=True):
+    def set_closed_feedwater_heater_from_fraction(self, fraction, turbineIndex, removeReheater=True):
         for i in range(turbineIndex + 1, len(self.preTurbStates.T)):
             self.turbineMassRatios[i] -= fraction
             if self.turbineMassRatios[i] <= 0:
@@ -623,9 +632,30 @@ class Cycle: # should be valid for both rankine and brayton
         h2 = cp.PropsSI("Hmass", "P", P, "Q", 0, self.postTurbStates.fluid[turbineIndex].to_coolprop())
         heat = (self.postTurbStates.h[turbineIndex] - h2) * fraction
         print("Closed Feedwater Heat:", heat)
-        #self.add_pre_combustion_heat_exchange(heat)
         self.recycledHeat += heat
+        self.closedFeedwaterHeatTransfer = heat
         self.closedFeedwaterExitEnthalpy = h2
+        self.closedFeedwaterMassRatio = fraction
+
+    def set_closed_feedwater_heater_from_heat(self, heat, turbineIndex, removeReheater=True):
+        self.solve_cp()
+        P = self.postTurbStates.P[turbineIndex]
+        h2 = cp.PropsSI("Hmass", "P", P, "Q", 0, self.postTurbStates.fluid[turbineIndex].to_coolprop())
+        fraction = heat / (self.postTurbStates.h[turbineIndex] - h2)
+        print("Closed Feedwater Fraction:", fraction)
+        self.set_closed_feedwater_heater_from_fraction(fraction, turbineIndex, removeReheater=removeReheater)
+
+    def set_closed_feedwater_heater_from_final_temp(self, temp, turbineIndex, removeReheater=True):
+        self.solve_cp()
+        h1 = self.postCompStates.h[-1]
+        h2 = cp.PropsSI("Hmass", "P", self.postCompStates.P[-1], "T", temp, self.postCompStates.fluid[-1].to_coolprop())
+        self.set_closed_feedwater_heater_from_heat(h2 - h1, turbineIndex, removeReheater=removeReheater)
+
+    def set_closed_feedwater_heater_from_temp_diff(self, temp, turbineIndex, removeReheater=True):
+        self.solve_cp()
+        temp = self.postTurbStates.T[turbineIndex] - temp
+        self.set_closed_feedwater_heater_from_final_temp(temp, turbineIndex, removeReheater=removeReheater)
+        
 
     def propagate_assuming_no_pressure_losses(self):
         if self.preCompStates.P[0] == None:
@@ -780,9 +810,20 @@ class Cycle: # should be valid for both rankine and brayton
         if self.recycledHeat > self.heat_exchanger_heat():
             print()
             print("WARNING: recycled heat is greater than heat entering through heat exchanger")
+        if self.closedFeedwaterMassRatio >= 1:
+            print()
+            print("WARNING: feedwater mass fraction > 1")
         print()
         print("---------------------------------------------------------------")
         print()
+
+
+
+
+
+
+
+
 
 
 
@@ -808,7 +849,7 @@ class Cycle: # should be valid for both rankine and brayton
             # combustion process:
             self.intermediates.extend(get_intermediate_points(self.heatingStates, 1, self.preTurbStates, 0, ["T", "P"]))
         
-        else: # single process combustion (no heat exchanges)
+        else: # single process combustion (no heat exchangers)
             try:
                 self.intermediates.extend(get_intermediate_points(self.postCompStates, -1, self.preTurbStates, 0, ["s", "P"]))
                 #print("success 1c")
@@ -882,7 +923,7 @@ class Cycle: # should be valid for both rankine and brayton
         y = self.intermediates.T
         
         ax.plot(x, y)
-        #ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
+        ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
 
         if isRankine:
             original_xlim = ax.get_xlim()
@@ -967,5 +1008,30 @@ def graph_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficien
     plt.scatter(fracs, efficiencies)
     plt.show(block=False)
 
+def graph_efficiency_vs_feedwater_pressure(parentCycle, minP, maxP, tempDiff, turbineIndex, numPoints, removeReheater=True):
+    pressures = []
+    efficiencies = []
+    for i in range(0, numPoints):
+        P = minP + (maxP - minP) * i / numPoints
+        cycle = copy.deepcopy(parentCycle)
+        cycle.postTurbStates.P[turbineIndex] = P
+        cycle.set_closed_feedwater_heater_from_temp_diff(tempDiff, turbineIndex, removeReheater=removeReheater)
+        cycle.solve_cp()
+
+        if cycle.closedFeedwaterMassRatio < 1:
+            print(cycle.closedFeedwaterMassRatio)
+            pressures.append(P)
+            efficiencies.append(cycle.efficiency())
+    
+    plt.figure()
+    plt.xlabel("Feedwater Heater Pressure - $Pa$")
+    plt.ylabel("Cycle Efficiency")
+    plt.scatter(pressures, efficiencies)
+    plt.show(block=False)
+        
+
 def init():
     multiprocessing.set_start_method('spawn')
+    import warnings
+    warnings.filterwarnings("ignore", message=".*Please use \"calc_sat_range\".*")
+    warnings.filterwarnings("ignore", message=".*Detected an incomplete phase envelope, fixing it numerically.*")
