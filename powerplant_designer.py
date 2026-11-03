@@ -430,8 +430,8 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
         knowns.append(["P", toSet.P[i]])
     if toSet.v[i] != None:
         knowns.append(["D", 1 / self.v[i]])
-    if toSet.X[i] != None:
-        knowns.append(["Q", toSet.X[i]])
+    #if toSet.X[i] != None:
+    #    knowns.append(["Q", toSet.X[i]])
 
 
     if len(knowns) == 0:
@@ -484,6 +484,9 @@ class Cycle: # should be valid for both rankine and brayton
 
         self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
         self.intermediates = None
+
+    def copy(self):
+        return copy.deepcopy(self)
         
 
     def combined_states(self):
@@ -1037,7 +1040,7 @@ def graph_efficiency_vs_feedwater_pressure(parentCycle, tempDiff, turbineIndex, 
     plt.show(block=False)
 
 def feedwater_pressure_efficiency_gradient(parentCycle, P, tempDiff, turbineIndex, removeReheater=True):
-    interval = 20
+    interval = 1
     cycle1 = copy.deepcopy(parentCycle)
     cycle2 = copy.deepcopy(parentCycle)
     cycle1.postTurbStates.P[turbineIndex] = P - interval / 2
@@ -1111,7 +1114,7 @@ def graph_efficiency_vs_compressor_pressure(parentCycle, minP, maxP, compressorI
 
 
 def compressor_pressure_efficiency_gradient(parentCycle, P, compressorIndex, feedwaterArgs=None):
-    interval = 20
+    interval = 1
     cycle1 = copy.deepcopy(parentCycle)
     cycle2 = copy.deepcopy(parentCycle)
     cycle1.postCompStates.P[compressorIndex] = P - interval / 2
@@ -1161,6 +1164,123 @@ def optimize_compressor_pressure(parentCycle, P1, P2, compressorIndex, feedwater
             plt.plot([i, i], [P1, P2])
             plt.show(block=False)
             plt.pause(0.5)
+    
+    return (P1 + P2) / 2
+
+
+def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, targetQuality, showGraph=False):
+    if showGraph:
+        plt.figure()
+        plt.xlabel("iteration")
+        plt.ylabel("Boiler Pressure - $Pa$")
+        plt.title("Turbine " + str(turbineIndex) + " Pressure Optimization for Quality Convergence")
+    
+    P2 = parentCycle.preTurbStates.P[0]
+    if turbineIndex > 0:
+        P2 = parentCycle.postTurbStates.P[turbineIndex - 1]
+
+    i = 1
+    P1 = None
+    while P1 == None and i < len(parentCycle.postTurbStates.P):
+        P1 = parentCycle.postTurbStates.P[turbineIndex + 1]
+        i += 1
+    if P1 == None:
+        P1 = 10
+    
+    tolerance = 1
+    i = 0
+    while P2 - P1 > tolerance:
+        P = (P1 + P2) / 2
+        cycle = copy.deepcopy(parentCycle)
+        cycle.postTurbStates.P[turbineIndex] = P
+        cycle.solve_cp()
+        
+        quality = cycle.postTurbStates.X[turbineIndex]
+        if quality == -1: # supercritical
+            quality = 1.1
+        
+        if quality < targetQuality:
+            P1 = P
+        elif quality > targetQuality:
+            P2 = P
+        else:
+            return P
+        
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [P1, P2])
+            plt.show(block=False)
+            plt.pause(0.5)
+
+    return (P1 + P2) / 2
+
+
+# following 2 functions need more work & integration with optimize_turbine_exit_pressure_for_quality() for reheater stages, but general idea is there:
+
+def graph_turbine_quality_vs_compressor_pressure(parentCycle, minP, maxP, compressorIndex, turbineIndex, numPoints, feedwaterArgs=None):
+    pressures = []
+    qualities = []
+    for i in range(0, numPoints):
+        P = minP + (maxP - minP) * i / numPoints
+        cycle = copy.deepcopy(parentCycle)
+        cycle.postCompStates.P[compressorIndex] = P
+        cycle.propagate_assuming_no_pressure_losses()
+        cycle.solve_cp()
+        
+        if feedwaterArgs != None:
+            feedwaterPressure = optimize_feedwater_pressure(cycle, feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
+            cycle.postTurbStates.P[feedwaterArgs[1]] = feedwaterPressure
+            cycle.set_closed_feedwater_heater_from_temp_diff(feedwaterArgs[0], feedwaterArgs[1])
+            cycle.solve_cp()
+
+        pressures.append(P)
+        qualities.append(cycle.postTurbStates.X[turbineIndex])
+
+    plt.figure()
+    plt.xlabel("Compressor " + str(compressorIndex) + " Exit Pressure - $Pa$")
+    plt.ylabel("Turbine " + str(turbineIndex) + " Quality")
+    plt.scatter(pressures, qualities)
+    plt.show(block=False)
+
+
+def optimize_compressor_pressure_for_turbine_quality(parentCycle, P1, P2, compressorIndex, turbineIndex, targetQuality, feedwaterArgs=None, showGraph=False):
+    if showGraph:
+        plt.figure()
+        plt.xlabel("iteration")
+        plt.ylabel("Boiler Pressure - $Pa$")
+        plt.title("Compressor " + str(compressorIndex) + " Optimization for Turbine Quality Convergence")
+
+    tolerance = 1
+    i = 0
+    while P2 - P1 > tolerance:
+        P = (P1 + P2) / 2
+        cycle = copy.deepcopy(parentCycle)
+        cycle.postCompStates.P[compressorIndex] = P
+        cycle.propagate_assuming_no_pressure_losses()
+        cycle.solve_cp()
+        
+        if feedwaterArgs != None:
+            feedwaterPressure = optimize_feedwater_pressure(cycle, feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
+            cycle.postTurbStates.P[feedwaterArgs[1]] = feedwaterPressure
+            cycle.set_closed_feedwater_heater_from_temp_diff(feedwaterArgs[0], feedwaterArgs[1])
+            cycle.solve_cp()
+        
+        quality = cycle.postTurbStates.X[turbineIndex]
+        if quality == -1: # supercritical
+            quality = 1.1
+        
+        if quality < targetQuality:
+            P1 = P
+        elif quality > targetQuality:
+            P2 = P
+        else:
+            return P
+        
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [P1, P2])
+            plt.show(block=False)
+            #plt.pause(0.5)
     
     return (P1 + P2) / 2
     
