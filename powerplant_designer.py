@@ -198,6 +198,8 @@ class SetOfStates():
         otherState.make_consistent(otherConsistent)
 
     def pop(self, i):
+        if i == None:
+            return
         self.T.pop(i)
         self.P.pop(i)
         self.v.pop(i)
@@ -693,6 +695,9 @@ class Cycle: # should be valid for both rankine and brayton
                 self.postTurbStates.P[i-1] = self.preTurbStates.P[i]
 
     def solve_rankine_reheater_pressures(self, untilTurbineIndex, targetQuality):
+        if untilTurbineIndex == -1:
+            untilTurbineIndex = len(self.preTurbStates.P) - 1
+        
         for j in range(0, untilTurbineIndex):
             if self.postTurbStates.P[j] == None:
                 reheaterPressure = optimize_turbine_exit_pressure_for_quality(self, j, targetQuality)
@@ -715,6 +720,31 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
+    def rankine_optimize(self, turbineExitQualities, closedFeedwaterIndex=None):
+        noFeedwater = self.copy()
+        if closedFeedwaterIndex != None:
+            noFeedwater.remove_reheat_step(closedFeedwaterIndex)
+
+        boilerPressure = optimize_compressor_pressure_for_turbine_quality(noFeedwater, 100000, 8000000, 0, -1, turbineExitQualities)
+        self.postCompStates.P = [boilerPressure]
+        self.propagate_assuming_no_pressure_losses()
+
+        if closedFeedwaterIndex != None:
+            self.solve_rankine_reheater_pressures(closedFeedwaterIndex, turbineExitQualities)
+            self.propagate_assuming_no_pressure_losses()
+            self.solve_cp()
+
+            P = optimize_feedwater_pressure(self, 10, closedFeedwaterIndex)
+            self.postTurbStates.P[1] = P
+            self.set_closed_feedwater_heater_from_temp_diff(10, closedFeedwaterIndex)
+            self.solve_cp()
+        
+        self.solve_rankine_reheater_pressures(-1, turbineExitQualities)
+        #print(self.postTurbStates.P[-1])
+        #print(self.preCompStates.P[0])
+        #self.solve_cp()
+        #self.propagate_assuming_no_pressure_losses()
+        #self.solve_cp()
 
 
 
@@ -808,18 +838,29 @@ class Cycle: # should be valid for both rankine and brayton
         print()
         print("---------------------------------------------------------------")
         print()
-        print("Lowest pressure:", preCompStates.P[0], "Pa")
+        print("Lowest pressure:", self.preCompStates.P[0], "Pa")
         print()
-        for i in range(0, len(postCompStates.P)):
-            print("Compressor", i, "pressure ratio:", postCompStates.P[i] / preCompStates.P[i])
-        print
-        print("Highest pressure:", postCompStates.P[-1], "Pa")
+        for i in range(0, len(self.postCompStates.P)):
+            print("Compressor", i, "pressure ratio:", self.postCompStates.P[i] / self.preCompStates.P[i])
         print()
-        
-        for i in range(0, len(postTurbStates.P)):
-            print("Compressor", i, "pressure ratio:", preTurbStates.P[i] / postTurbStates.P[i])
-            print("             exit quality:", postTurbStates.X[i])
-        
+        print("Highest pressure:", self.postCompStates.P[-1], "Pa")
+        print()
+        for i in range(0, len(self.postTurbStates.P)):
+            print("Turbine", i, "pressure ratio:", self.preTurbStates.P[i] / self.postTurbStates.P[i])
+            if self.postTurbStates.X[i] == -1:
+                print("          exit quality: saturated")
+            else:
+                print("          exit quality:", self.postTurbStates.X[i])
+        if self.closedFeedwaterMassRatio > 0:
+            print()
+            print("Closed feedwater heater flow ratio:", self.closedFeedwaterMassRatio)
+            print("Closed feedwater heater heat transfer:", self.closedFeedwaterHeatTransfer, "J/kg")
+            fwState = SetOfStates(1)
+            fwState.h[0] = self.postCompStates.h[-1] + self.closedFeedwaterHeatTransfer
+            fwState.P[0] = self.postCompStates.P[-1]
+            fwState.fluid[0] = self.postCompStates.fluid[-1]
+            fwState.solve_points()
+            print("Temperature after feedwater heat exchange:", fwState.T[0], "K")
         print()
         print("---------------------------------------------------------------")
         print()
@@ -1094,6 +1135,9 @@ def feedwater_pressure_efficiency_gradient(parentCycle, P, tempDiff, turbineInde
     cycle2.set_closed_feedwater_heater_from_temp_diff(tempDiff, turbineIndex, removeReheater=removeReheater)
     cycle1.solve_cp()
     cycle2.solve_cp()
+    
+    if cycle2.efficiency() == 0:
+        return -1 # stop trying to set feedwater above boiler temperature
     return (cycle2.efficiency() - cycle1.efficiency()) / interval
 
 def optimize_feedwater_pressure(parentCycle, tempDiff, turbineIndex, removeReheater=True, showGraph=False):
