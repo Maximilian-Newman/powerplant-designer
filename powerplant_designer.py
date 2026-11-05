@@ -725,7 +725,7 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
-    def rankine_optimize(self, turbineExitQualities, closedFeedwaterIndex=None):
+    def rankine_optimize_no_temp_changes(self, turbineExitQualities, closedFeedwaterIndex=None):
         noFeedwater = self.copy()
         if closedFeedwaterIndex != None:
             noFeedwater.remove_reheat_step(closedFeedwaterIndex)
@@ -746,6 +746,14 @@ class Cycle: # should be valid for both rankine and brayton
         
         self.solve_rankine_reheater_pressures(-1, turbineExitQualities)
 
+    def rankine_optimize(self, turbineExitQualities, closedFeedwaterIndex=None):
+        for i in range(0, len(self.preTurbStates.P)):
+            print(i)
+            if self.preTurbStates.T[i] != None and self.preTurbStates.T[i] != closedFeedwaterIndex:
+                self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, closedFeedwaterIndex=closedFeedwaterIndex)
+        
+        self.rankine_optimize_no_temp_changes(turbineExitQualities, closedFeedwaterIndex=closedFeedwaterIndex)
+
     def change_reheater_pressure(self, pressure, turbineIndex):
         self.postTurbStates.P[turbineIndex] = pressure
         self.postTurbStates.T[turbineIndex] = None
@@ -754,10 +762,20 @@ class Cycle: # should be valid for both rankine and brayton
         self.postTurbStates.s[turbineIndex] = None
         self.postTurbStates.X[turbineIndex] = None
         self.preTurbStates.P[turbineIndex + 1] = pressure
-        self.postTurbStates.v[turbineIndex + 1] = None
-        self.postTurbStates.h[turbineIndex + 1] = None
-        self.postTurbStates.s[turbineIndex + 1] = None
-        self.postTurbStates.X[turbineIndex + 1] = None
+        self.preTurbStates.v[turbineIndex + 1] = None
+        self.preTurbStates.h[turbineIndex + 1] = None
+        self.preTurbStates.s[turbineIndex + 1] = None
+        self.preTurbStates.X[turbineIndex + 1] = None
+
+    """ BAD DON'T USE:
+    def change_reheater_temperature(self, temp, turbineIndex):
+        self.preTurbStates.T[turbineIndex + 1] = temp
+        for i in range(turbineIndex + 1, len(self.preTurbStates.P)):
+            self.preTurbStates.v[i] = None
+            self.preTurbStates.h[i] = None
+            self.preTurbStates.s[i] = None
+            self.preTurbStates.X[i] = None
+    """
 
 
 
@@ -1035,8 +1053,8 @@ class Cycle: # should be valid for both rankine and brayton
         
         if ax == None:
             ax = plt.figure().add_subplot()
-            ax.set_xlabel("s - $J kg^{-1} K^{-1}$")
-            ax.set_ylabel("T - $K$")
+            ax.set_xlabel("Specific Entropy - $J kg^{-1} K^{-1}$")
+            ax.set_ylabel("Temperature - $K$")
 
         x = []
         y = []
@@ -1081,8 +1099,8 @@ class Cycle: # should be valid for both rankine and brayton
         
         if ax == None:
             ax = plt.figure().add_subplot()
-            ax.set_xlabel("v - $m^3 kg^{-1}$")
-            ax.set_ylabel("P - $Pa$")
+            ax.set_xlabel("Specific Volume - $m^3 kg^{-1}$")
+            ax.set_ylabel("Pressure - $Pa$")
 
         x = []
         y = []
@@ -1293,7 +1311,6 @@ def optimize_compressor_pressure(parentCycle, P1, P2, compressorIndex, feedwater
             i += 1
             plt.plot([i, i], [P1, P2])
             plt.show(block=False)
-            plt.pause(0.5)
     
     return (P1 + P2) / 2
 
@@ -1386,6 +1403,7 @@ def graph_turbine_quality_vs_compressor_pressure(parentCycle, minP, maxP, compre
     plt.show(block=False)
 
 
+# needs some fixing:
 def optimize_compressor_pressure_for_turbine_quality(parentCycle, P1, P2, compressorIndex, turbineIndex, targetQuality, feedwaterArgs=None, showGraph=False):
     if turbineIndex == -1:
         turbineIndex = len(parentCycle.postTurbStates.P) - 1
@@ -1459,7 +1477,95 @@ def graph_reheater_pressure_vs_efficiency(parentCycle, turbineIndex, numPoints):
     plt.ylabel("Cycle Efficiency")
     plt.scatter(pressures, efficiencies)
     plt.show(block=False)
+
+
+"""" BAD
+def graph_reheater_temperature_vs_efficiency(parentCycle, turbineIndex, numPoints):
+    # will only check decreasing temperature. assumes increasing the temp is not an option
     
+    minT = max([parentCycle.postTurbStates.T[turbineIndex], parentCycle.postTurbStates.T[turbineIndex + 1]])
+    maxT = parentCycle.preTurbStates.T[turbineIndex + 1]
+
+    temperatures = []
+    efficiencies = []
+    
+    for i in range(0, numPoints):
+        T = minT + (maxT - minT) * i / numPoints
+        cycle = parentCycle.copy()
+        cycle.change_reheater_temperature(T, turbineIndex)
+        cycle.solve_cp()
+
+        temperatures.append(T)
+        efficiencies.append(cycle.efficiency())
+
+    plt.figure()
+    plt.xlabel("Reheater " + str(turbineIndex) + " Temperature - $K$")
+    plt.ylabel("Cycle Efficiency")
+    plt.scatter(temperatures, efficiencies)
+    plt.show(block=False)
+"""
+
+def graph_turbine_inlet_temp_vs_optimized_rankine_efficiency(parentCycle, turbineIndex, minT, maxT, turbineExitQualities, numPoints, closedFeedwaterIndex=None):
+    # only pass an unsolved cycle to this, otherwise will create very broken cycles
+    temperatures = []
+    efficiencies = []
+    for i in range(0, numPoints):
+        T = minT + (maxT - minT) * i / numPoints
+        cycle = parentCycle.copy()
+        cycle.preTurbStates.T[turbineIndex] = T
+        cycle.rankine_optimize_no_temp_changes(turbineExitQualities, closedFeedwaterIndex=closedFeedwaterIndex)
+        temperatures.append(T)
+        efficiencies.append(cycle.efficiency())
+
+    plt.figure()
+    plt.xlabel("Turbine " + str(turbineIndex) + " Inlet Temperature - $K$")
+    plt.ylabel("Cycle Efficiency")
+    plt.scatter(temperatures, efficiencies)
+    plt.show(block=False)
+
+
+def rankine_turbine_inlet_temp_efficiency_gradient(parentCycle, temp, turbineIndex, turbineExitQualities, closedFeedwaterIndex=None):
+    interval = 1
+    cycle1 = copy.deepcopy(parentCycle)
+    cycle2 = copy.deepcopy(parentCycle)
+    cycle1.preTurbStates.T[turbineIndex] = temp - interval / 2
+    cycle2.preTurbStates.T[turbineIndex] = temp + interval / 2
+    cycle1.rankine_optimize_no_temp_changes(turbineExitQualities, closedFeedwaterIndex=closedFeedwaterIndex)
+    cycle2.rankine_optimize_no_temp_changes(turbineExitQualities, closedFeedwaterIndex=closedFeedwaterIndex)
+    return (cycle2.efficiency() - cycle1.efficiency()) / interval
+
+def rankine_optimize_turbine_inlet_temperature(parentCycle, turbineIndex, turbineExitQualities, closedFeedwaterIndex=None, showGraph=False):
+    # will only decrease from previous value, assuming increasing temperature is not an option
+    if showGraph:
+        plt.figure()
+        plt.xlabel("iteration")
+        plt.ylabel("Temperature - $Pa$")
+        plt.title("Turbine " + str(turbineIndex) + " Inlet Temperature Optimization Convergence")
+    
+    solvedBase = parentCycle.copy()
+    solvedBase.rankine_optimize_no_temp_changes(turbineExitQualities, closedFeedwaterIndex=closedFeedwaterIndex)
+    T1 = max([solvedBase.postTurbStates.T[turbineIndex - 1], solvedBase.postTurbStates.T[turbineIndex]])
+    T2 = solvedBase.preTurbStates.T[turbineIndex]
+    
+    tolerance = 1
+    i = 0
+    while T2 - T1 > tolerance:
+        T = (T1 + T2) / 2
+        grad = rankine_turbine_inlet_temp_efficiency_gradient(parentCycle, T, turbineIndex, turbineExitQualities, closedFeedwaterIndex=closedFeedwaterIndex)
+        if grad > 0:
+            T1 = T
+        elif grad < 0:
+            T2 = T
+        else:
+            return T
+        
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [T1, T2])
+            plt.show(block=False)
+            plt.pause(0.5)
+
+    return (T1 + T2) / 2
 
 def init():
     multiprocessing.set_start_method('spawn')
