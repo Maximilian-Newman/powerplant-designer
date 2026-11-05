@@ -8,7 +8,7 @@ if __name__ == "__main__":
     rankine = pd.Cycle(1, 3, pd.Mixture([["H2O", 1]]))
     rankine.preCompStates.T = [273.15 + 40]
     rankine.preCompStates.X = [0]
-    rankine.preTurbStates.T = [570, 570, None]
+    rankine.preTurbStates.T = [570 + 273.15, 570 + 273.15, None]
     
     rankine.turbineEfficiencies = [0.85, 0.85, 0.85]
     rankine.compressorEfficiencies = [0.8]
@@ -19,6 +19,8 @@ if __name__ == "__main__":
 
     rankine.print_design_info()
     rankine.print_energy_calcs()
+    pd.graph_reheater_pressure_vs_efficiency(rankine, 0, 30)
+    pd.plt.pause(5)
     rankineTS = rankine.ts_diagram(isRankine=True)
     rankineTS.set_title("Rankine Test Plot Ts")
     pd.plt.show(block=False)

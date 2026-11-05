@@ -20,6 +20,7 @@ CEA_TO_COOLPROP_NAMES = {
     "H2O(cr)" : "Water",
     "Ar" : "Argon",
     "Ne" : "Neon",
+    "C2H4" : "Ethylene",
 }
 
 KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO", "C(gr)", "O"]
@@ -237,23 +238,23 @@ class SetOfStates():
             if self.X[i] != None:
                 knowns.append(["Q", self.X[i]])
 
-            if len(knowns) < 2:
-                #print("Couldn't solve point", i)
-                continue
-
-            if self.T[i] == None:
-                self.T[i] = cp.PropsSI("T", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
-            if self.P[i] == None:
-                self.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
-            if self.v[i] == None:
-                self.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
-            if self.h[i] == None:
-                self.h[i] = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
-            if self.s[i] == None:
-                self.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
-            if self.X[i] == None:
-                self.X[i] = cp.PropsSI("Q", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
-
+            while len(knowns) >= 2:
+                try:
+                    if self.T[i] == None:
+                        self.T[i] = cp.PropsSI("T", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                    if self.P[i] == None:
+                        self.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                    if self.v[i] == None:
+                        self.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                    if self.h[i] == None:
+                        self.h[i] = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                    if self.s[i] == None:
+                        self.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                    if self.X[i] == None:
+                        self.X[i] = cp.PropsSI("Q", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                    knowns = []
+                except:
+                    knowns.pop(0)
     
     def point_is_solved(self, i):
         if self.T[i] == None: return False
@@ -492,6 +493,7 @@ class Cycle: # should be valid for both rankine and brayton
         self.turbineMassRatios = [1] * numTurb # fraction left at each stage after removal from feedwater heater
         self.closedFeedwaterExitEnthalpy = 0
         self.closedFeedwaterHeatTransfer = 0
+        self.closedFeedwaterTurbineIndex = None
 
         self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
         self.intermediates = None
@@ -650,6 +652,7 @@ class Cycle: # should be valid for both rankine and brayton
         self.closedFeedwaterHeatTransfer = heat
         self.closedFeedwaterExitEnthalpy = h2
         self.closedFeedwaterMassRatio = fraction
+        self.closedFeedwaterTurbineIndex = turbineIndex
 
     def set_closed_feedwater_heater_from_heat(self, heat, turbineIndex, removeReheater=True):
         self.solve_cp()
@@ -665,9 +668,11 @@ class Cycle: # should be valid for both rankine and brayton
         h2 = cp.PropsSI("Hmass", "P", self.postCompStates.P[-1], "T", temp, self.postCompStates.fluid[-1].to_coolprop())
         self.set_closed_feedwater_heater_from_heat(h2 - h1, turbineIndex, removeReheater=removeReheater)
 
-    def set_closed_feedwater_heater_from_temp_diff(self, temp, turbineIndex, removeReheater=True):
+    def set_closed_feedwater_heater_from_temp_diff(self, tempDiff, turbineIndex, removeReheater=True):
         self.solve_cp()
-        temp = self.postTurbStates.T[turbineIndex] - temp
+        #temp = self.postTurbStates.T[turbineIndex] - temp
+        P = self.postTurbStates.P[turbineIndex]
+        temp = cp.PropsSI("T", "P", P, "Q", 0, self.postTurbStates.fluid[turbineIndex].to_coolprop()) - tempDiff
         self.set_closed_feedwater_heater_from_final_temp(temp, turbineIndex, removeReheater=removeReheater)
         
 
@@ -740,13 +745,19 @@ class Cycle: # should be valid for both rankine and brayton
             self.solve_cp()
         
         self.solve_rankine_reheater_pressures(-1, turbineExitQualities)
-        #print(self.postTurbStates.P[-1])
-        #print(self.preCompStates.P[0])
-        #self.solve_cp()
-        #self.propagate_assuming_no_pressure_losses()
-        #self.solve_cp()
 
-
+    def change_reheater_pressure(self, pressure, turbineIndex):
+        self.postTurbStates.P[turbineIndex] = pressure
+        self.postTurbStates.T[turbineIndex] = None
+        self.postTurbStates.v[turbineIndex] = None
+        self.postTurbStates.h[turbineIndex] = None
+        self.postTurbStates.s[turbineIndex] = None
+        self.postTurbStates.X[turbineIndex] = None
+        self.preTurbStates.P[turbineIndex + 1] = pressure
+        self.postTurbStates.v[turbineIndex + 1] = None
+        self.postTurbStates.h[turbineIndex + 1] = None
+        self.postTurbStates.s[turbineIndex + 1] = None
+        self.postTurbStates.X[turbineIndex + 1] = None
 
 
 
@@ -980,12 +991,42 @@ class Cycle: # should be valid for both rankine and brayton
         elif self.postTurbStates.fluid[-1].data == self.preCompStates.fluid[0].data or not dontDrawComplexBraytonCooling: # single step
             try:
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"]))
-                #print("success 2c")
             except:
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["T", "P"]))
-                #print("fail 2c")
 
         self.intermediates.make_consistent(True)
+
+
+    def get_closed_feedwater_states(self):
+        i = self.closedFeedwaterTurbineIndex
+        feedwaterStates = SetOfStates(3, self.postTurbStates.fluid[i])
+        
+        feedwaterStates.P[0] = self.postTurbStates.P[i]
+        feedwaterStates.T[0] = self.postTurbStates.T[i]
+        feedwaterStates.v[0] = self.postTurbStates.v[i]
+        feedwaterStates.h[0] = self.postTurbStates.h[i]
+        feedwaterStates.s[0] = self.postTurbStates.s[i]
+        feedwaterStates.X[0] = self.postTurbStates.X[i]
+        
+        feedwaterStates.P[1] = self.postTurbStates.P[i]
+        feedwaterStates.h[1] = self.closedFeedwaterExitEnthalpy
+
+        feedwaterStates.P[2] = self.postTurbStates.P[-1]
+        feedwaterStates.h[2] = self.closedFeedwaterExitEnthalpy
+        
+        feedwaterStates.solve_points()
+        return feedwaterStates
+
+    
+    def closed_feedwater_ts(self, ax):
+        feedwaterStates = self.get_closed_feedwater_states()
+        feedwaterStates.solve_points()
+        intermediates = SetOfStates(3, feedwaterStates.fluid[0])
+        intermediates.extend(get_intermediate_points(feedwaterStates, 0, feedwaterStates, 1, ["h", "s"]))
+        intermediates.extend(get_intermediate_points(feedwaterStates, 1, feedwaterStates, 2, ["h", "P"], numPoints=5))
+
+        ax.plot(intermediates.s, intermediates.T, marker=".")
+        
 
     
     def ts_diagram(self, ax=None, label=None, isRankine=False):
@@ -1003,7 +1044,7 @@ class Cycle: # should be valid for both rankine and brayton
             x.append(allPoints.s[i])
             y.append(allPoints.T[i])
 
-        ax.scatter(x, y, label=label)
+        ax.scatter(x, y, label=label, marker="o", s=50)
 
         
         
@@ -1013,8 +1054,7 @@ class Cycle: # should be valid for both rankine and brayton
         x = self.intermediates.s
         y = self.intermediates.T
         
-        ax.plot(x, y)
-        ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
+        ax.plot(x, y, marker=".")
 
         if isRankine:
             original_xlim = ax.get_xlim()
@@ -1026,6 +1066,9 @@ class Cycle: # should be valid for both rankine and brayton
             ax.set_xlim(original_xlim)
             ax.set_ylim(original_ylim)
             ax.autoscale(True)
+
+        if self.closedFeedwaterTurbineIndex != None:
+            self.closed_feedwater_ts(ax)
         
         if label != None:
             ax.legend()
@@ -1047,7 +1090,7 @@ class Cycle: # should be valid for both rankine and brayton
             x.append(allPoints.v[i])
             y.append(allPoints.P[i])
 
-        ax.scatter(x, y, label=label)
+        ax.scatter(x, y, label=label, marker="o", s=50)
 
         
         
@@ -1057,8 +1100,7 @@ class Cycle: # should be valid for both rankine and brayton
         x = self.intermediates.v
         y = self.intermediates.P
         
-        ax.plot(x, y)
-        #ax.scatter(x, y, marker=".") # for debug to ensure no large jumps
+        ax.plot(x, y, marker=".")
         
         if label != None:
             ax.legend()
@@ -1388,6 +1430,35 @@ def optimize_compressor_pressure_for_turbine_quality(parentCycle, P1, P2, compre
             plt.show(block=False)
     
     return (P1 + P2) / 2
+
+
+# lowest pressure seems to always be most efficient, not worth making a solver (for rankine anyway)
+# graph this anyway just to be sure
+def graph_reheater_pressure_vs_efficiency(parentCycle, turbineIndex, numPoints):
+    minP = parentCycle.postTurbStates.P[turbineIndex]
+    maxP = parentCycle.preTurbStates.P[turbineIndex]
+    # assuming already ran solve_rankine_reheater_pressures() or optimize_turbine_exit_pressure_for_quality() in rankine cycles
+    # will not attempt pressures lower than the current value, if a pressure is already defined for that state
+    if minP == None:
+        minP = parentCycle.preTurbStates.P[turbineIndex + 1]
+
+    pressures = []
+    efficiencies = []
+    
+    for i in range(0, numPoints):
+        P = minP + (maxP - minP) * i / numPoints
+        cycle = parentCycle.copy()
+        cycle.change_reheater_pressure(P, turbineIndex)
+        cycle.solve_cp()
+
+        pressures.append(P)
+        efficiencies.append(cycle.efficiency())
+
+    plt.figure()
+    plt.xlabel("Reheater " + str(turbineIndex) + " Pressure - $Pa$")
+    plt.ylabel("Cycle Efficiency")
+    plt.scatter(pressures, efficiencies)
+    plt.show(block=False)
     
 
 def init():
