@@ -270,49 +270,6 @@ class SetOfStates():
                 return False
         return True
 
-    def polytropic_interpolation(self, a, b, numPoints = 3):
-        # doesn't work well and currently not in use
-        # leaving here in case it becomes useflul later and I return to it
-
-        
-        intermediates = SetOfStates(0)
-        #if self.X[a] != self.X[b]:
-        #    return intermediates
-        
-        k = math.log(self.P[a] / self.P[b]) / math.log(self.v[b] / self.v[a])
-        c = self.P[a] + self.v[a] ** k
-
-        print()
-        print(self.P[a], self.P[b])
-        print(self.v[a], self.v[b])
-        print(k, c)
-
-        for i in range(0, numPoints):
-            v = 0
-            P = 0
-
-            if k < 1:
-                v = self.v[a] + (self.v[b] - self.v[a]) * i / numPoints
-                P = c / v**k
-            else:
-                P = self.P[a] + (self.P[b] - self.P[a]) * i / numPoints
-                v = (P / c) ** (1/k)
-
-            print(P, "\t", v)
-            
-            intermediates.T.append(None)
-            intermediates.P.append(P)
-            intermediates.v.append(v)
-            intermediates.h.append(None)
-            intermediates.s.append(None)
-            intermediates.X.append(None)
-            intermediates.fluid.append(self.fluid[a])
-        try:
-            intermediates.solve_points()
-        except:
-            return SetOfStates(0)
-        return intermediates
-
     def get_property(self, i, symbol):
         if symbol == "T":
             return self.T[i]
@@ -725,7 +682,19 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
-    def rankine_optimize_fixed_compression_and_temperatures(self, turbineExitQualities, feedwaterArgs=None):
+    def rankine_optimize_fixed_compression(self, turbineExitQualities, feedwaterArgs=None):
+        for i in range(0, len(self.preTurbStates.P)):
+            if self.preTurbStates.T[i] != None:
+                if feedwaterArgs == None:
+                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs)
+                elif self.preTurbStates.T[i] != feedwaterArgs[1]:
+                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        
+        self.rankine_optimize_no_temp_changes(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+
+        
+
+    def rankine_optimize_no_temp_changes(self, turbineExitQualities, feedwaterArgs=None):
         if feedwaterArgs != None:
             self.solve_rankine_reheater_pressures(feedwaterArgs[1], turbineExitQualities)
             self.propagate_assuming_no_pressure_losses()
@@ -738,29 +707,17 @@ class Cycle: # should be valid for both rankine and brayton
         
         self.solve_rankine_reheater_pressures(-1, turbineExitQualities)
 
-    def rankine_optimize_no_temp_changes(self, turbineExitQualities, feedwaterArgs=None):
-        noFeedwater = self.copy()
-        if feedwaterArgs != None:
-            noFeedwater.remove_reheat_step(feedwaterArgs[1])
-
-        boilerPressure = optimize_compressor_pressure_for_turbine_quality(noFeedwater, 0, -1, turbineExitQualities)
-        #graph_turbine_quality_vs_compressor_pressure(self, 0, -1, 20, reheaterQuality=turbineExitQualities, feedwaterArgs=feedwaterArgs)
-        #plt.pause(5)
-        #boilerPressure = optimize_compressor_pressure_for_turbine_quality(self, 0, -1, turbineExitQualities, feedwaterArgs=feedwaterArgs)
-        self.postCompStates.P = [boilerPressure]
-        self.propagate_assuming_no_pressure_losses()
-        self.rankine_optimize_fixed_compression_and_temperatures(turbineExitQualities, feedwaterArgs=feedwaterArgs)
-
     def rankine_optimize(self, turbineExitQualities, feedwaterArgs=None):
-        for i in range(0, len(self.preTurbStates.P)):
-            
-            if self.preTurbStates.T[i] != None:
-                if feedwaterArgs == None:
-                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs)
-                elif self.preTurbStates.T[i] != feedwaterArgs[1]:
-                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        boilerPressure = rankine_optimize_boiler_pressure(self, turbineExitQualities, feedwaterArgs=feedwaterArgs, showGraph=True)
+        self.postCompStates.P[-1] = boilerPressure
+        self.propagate_assuming_no_pressure_losses()
+        self.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs)
         
-        self.rankine_optimize_no_temp_changes(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+
+
+
+
+        
 
     def change_reheater_pressure(self, pressure, turbineIndex):
         self.postTurbStates.P[turbineIndex] = pressure
@@ -866,7 +823,11 @@ class Cycle: # should be valid for both rankine and brayton
         return self.w_out() - self.w_in()
 
     def efficiency(self):
+        #try:
         return self.w_net() / (self.q_in() - self.recycledHeat)
+        #except:
+        #    print(self.preTurbStates.P)
+        #    print(self.postTurbStates.P)
 
     def back_work(self):
         return self.w_in() / self.w_out()
@@ -1168,11 +1129,11 @@ def graph_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficien
     plt.show(block=False)
 
 def graph_efficiency_vs_feedwater_pressure(parentCycle, tempDiff, turbineIndex, numPoints, removeReheater=True):
-    maxP = parentCycle.preTurbStates.P[0]
+    maxP = parentCycle.preTurbStates.P[0] - 10
     if turbineIndex > 0:
-        P2 = parentCycle.postTurbStates.P[turbineIndex - 1]
+        maxP = parentCycle.postTurbStates.P[turbineIndex - 1] - 10
     
-    minP = parentCycle.postTurbStates.P[turbineIndex + 1]
+    minP = parentCycle.postTurbStates.P[turbineIndex + 1] + 10
     
     pressures = []
     efficiencies = []
@@ -1212,8 +1173,9 @@ def optimize_feedwater_pressure(parentCycle, tempDiff, turbineIndex, removeRehea
     P2 = parentCycle.preTurbStates.P[0]
     if turbineIndex > 0:
         P2 = parentCycle.postTurbStates.P[turbineIndex - 1]
+    P2 -= 10
 
-    P1 = parentCycle.postTurbStates.P[turbineIndex + 1]
+    P1 = parentCycle.postTurbStates.P[turbineIndex + 1] + 10
     
     if showGraph:
         plt.figure()
@@ -1243,86 +1205,6 @@ def optimize_feedwater_pressure(parentCycle, tempDiff, turbineIndex, removeRehea
 
 
 
-def graph_efficiency_vs_compressor_pressure(parentCycle, minP, maxP, compressorIndex, numPoints, feedwaterArgs=None):
-    pressures = []
-    efficiencies = []
-    for i in range(0, numPoints):
-        P = minP + (maxP - minP) * i / numPoints
-        cycle = copy.deepcopy(parentCycle)
-        cycle.postCompStates.P[compressorIndex] = P
-        cycle.solve_cp()
-        cycle.propagate_assuming_no_pressure_losses()
-        if feedwaterArgs != None:
-            feedwaterPressure = optimize_feedwater_pressure(cycle, feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-            cycle.postTurbStates.P[feedwaterArgs[1]] = feedwaterPressure
-            cycle.set_closed_feedwater_heater_from_temp_diff(feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-            cycle.solve_cp()
-
-        pressures.append(P)
-        efficiencies.append(cycle.efficiency())
-    
-    plt.figure()
-    plt.xlabel("Compressor " + str(compressorIndex) + " Exit Pressure - $Pa$")
-    plt.ylabel("Cycle Efficiency")
-    plt.scatter(pressures, efficiencies)
-    plt.show(block=False)
-        
-
-
-def compressor_pressure_efficiency_gradient(parentCycle, P, compressorIndex, feedwaterArgs=None):
-    interval = 1
-    cycle1 = copy.deepcopy(parentCycle)
-    cycle2 = copy.deepcopy(parentCycle)
-    cycle1.postCompStates.P[compressorIndex] = P - interval / 2
-    cycle2.postCompStates.P[compressorIndex] = P + interval / 2
-    cycle1.solve_cp()
-    cycle2.solve_cp()
-    cycle1.propagate_assuming_no_pressure_losses()
-    cycle2.propagate_assuming_no_pressure_losses()
-    cycle1.solve_cp()
-    cycle2.solve_cp()
-    if feedwaterArgs != None:
-        feedwaterPressure = optimize_feedwater_pressure(cycle1, feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-        cycle1.postTurbStates.P[feedwaterArgs[1]] = feedwaterPressure
-        feedwaterPressure = optimize_feedwater_pressure(cycle2, feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-        cycle2.postTurbStates.P[feedwaterArgs[1]] = feedwaterPressure
-        cycle1.set_closed_feedwater_heater_from_temp_diff(feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-        cycle2.set_closed_feedwater_heater_from_temp_diff(feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-        cycle1.solve_cp()
-        cycle2.solve_cp()
-    
-    return (cycle2.efficiency() - cycle1.efficiency()) / interval
-
-
-# seems redundant, higher pressure always wins (testing with Rankine compressor). Keeping this in case it becomes useful later.
-def optimize_compressor_pressure(parentCycle, P1, P2, compressorIndex, feedwaterArgs=None, showGraph=False):
-    if showGraph:
-        plt.figure()
-        plt.xlabel("iteration")
-        plt.ylabel("Boiler Pressure - $Pa$")
-        plt.title("Compressor " + str(compressorIndex) + " Optimization Convergence")
-    
-    tolerance = 1
-    i = 0
-    while P2 - P1 > tolerance:
-        P = (P1 + P2) / 2
-        cycle = copy.deepcopy(parentCycle)
-        grad = compressor_pressure_efficiency_gradient(cycle, P, compressorIndex, feedwaterArgs=feedwaterArgs)
-        if grad > 0:
-            P1 = P
-        elif grad < 0:
-            P2 = P
-        else:
-            return P
-        
-        if showGraph:
-            i += 1
-            plt.plot([i, i], [P1, P2])
-            plt.show(block=False)
-    
-    return (P1 + P2) / 2
-
-
 def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, targetQuality, showGraph=False):
     if showGraph:
         plt.figure()
@@ -1333,6 +1215,7 @@ def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, target
     P2 = parentCycle.preTurbStates.P[0]
     if turbineIndex > 0:
         P2 = parentCycle.postTurbStates.P[turbineIndex - 1]
+    P2 -= 10
 
     i = 1
     P1 = None
@@ -1347,6 +1230,8 @@ def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, target
     if P1 == None:
         P1 = 10
         print("ERROR No minimum pressure for cycle")
+
+    P1 += 10
     
     tolerance = 1
     i = 0
@@ -1359,8 +1244,11 @@ def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, target
         quality = cycle.postTurbStates.X[turbineIndex]
         if quality == -1: # superheated vapour
             quality = 1.1
+
+        if quality == None:
+            P1 = P
         
-        if quality < targetQuality:
+        elif quality < targetQuality:
             P1 = P
         elif quality > targetQuality:
             P2 = P
@@ -1376,113 +1264,19 @@ def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, target
 
 
 
-def graph_turbine_quality_vs_compressor_pressure(parentCycle, compressorIndex, turbineIndex, numPoints, reheaterQuality=1, feedwaterArgs=None):
-    solvedParent = parentCycle.copy()
-    solvedParent.solve_cp()
-    minP = solvedParent.preCompStates.P[0] + 1
-    maxP = cp.PropsSI(parentCycle.postCompStates.fluid[compressorIndex].to_coolprop(), "pcrit") - 10
 
-    if turbineIndex == -1:
-        turbineIndex = len(parentCycle.postTurbStates.P) - 1
-    pressures = []
-    qualities = []
-    for i in range(0, numPoints):
-        P = minP + (maxP - minP) * i / numPoints
-        cycle = copy.deepcopy(parentCycle)
-        cycle.postCompStates.P[compressorIndex] = P
-        cycle.propagate_assuming_no_pressure_losses()
-        cycle.solve_cp()
-
-        cycle.solve_rankine_reheater_pressures(turbineIndex, reheaterQuality)
-        #cycle.rankine_optimize_fixed_compression_and_temperatures(reheaterQuality, feedwaterArgs=feedwaterArgs)
-        
-        if feedwaterArgs != None:
-            feedwaterPressure = optimize_feedwater_pressure(cycle, feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-            cycle.postTurbStates.P[feedwaterArgs[1]] = feedwaterPressure
-            cycle.set_closed_feedwater_heater_from_temp_diff(feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-            cycle.solve_cp()
-
-        pressures.append(P)
-        x = cycle.postTurbStates.X[turbineIndex]
-        print(P, x)
-        if x == -1:
-            qualities.append(1)
-        else:
-            qualities.append(x)
-
-    plt.figure()
-    plt.xlabel("Compressor " + str(compressorIndex) + " Exit Pressure - $Pa$")
-    plt.ylabel("Turbine " + str(turbineIndex) + " Quality")
-    plt.scatter(pressures, qualities)
-    plt.show(block=False)
-
-
-# Only seems to work sometimes, and fails at some post-boiler temperatures:
-def optimize_compressor_pressure_for_turbine_quality(parentCycle, compressorIndex, turbineIndex, targetQuality, feedwaterArgs=None, showGraph=False):
-    #graph_turbine_quality_vs_compressor_pressure(parentCycle, compressorIndex, turbineIndex, 20, reheaterQuality=targetQuality, feedwaterArgs=feedwaterArgs)
-    
-    solvedParent = parentCycle.copy()
-    solvedParent.solve_cp()
-    P1 = solvedParent.preCompStates.P[0] + 1
-    P2 = cp.PropsSI(parentCycle.postCompStates.fluid[compressorIndex].to_coolprop(), "pcrit") - 10
-    
-    if turbineIndex == -1:
-        turbineIndex = len(parentCycle.postTurbStates.P) - 1
-        
-    if showGraph:
-        plt.figure()
-        plt.xlabel("iteration")
-        plt.ylabel("Boiler Pressure - $Pa$")
-        plt.title("Compressor " + str(compressorIndex) + " Optimization for Turbine Quality Convergence")
-
-    tolerance = 1
-    i = 0
-    while P2 - P1 > tolerance:
-        P = (P1 + P2) / 2
-        cycle = copy.deepcopy(parentCycle)
-        cycle.postCompStates.P[compressorIndex] = P
-        cycle.propagate_assuming_no_pressure_losses()
-        cycle.solve_cp()
-
-        cycle.solve_rankine_reheater_pressures(turbineIndex, targetQuality)
-        #cycle.rankine_optimize_fixed_compression_and_temperatures(targetQuality, feedwaterArgs=feedwaterArgs)
-        
-        if feedwaterArgs != None:
-            feedwaterPressure = optimize_feedwater_pressure(cycle, feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-            cycle.postTurbStates.P[feedwaterArgs[1]] = feedwaterPressure
-            cycle.set_closed_feedwater_heater_from_temp_diff(feedwaterArgs[0], feedwaterArgs[1], removeReheater=feedwaterArgs[2])
-            cycle.solve_cp()
-        
-        quality = cycle.postTurbStates.X[turbineIndex]
-        if quality == -1: # superheated vapour
-            quality = 1.1
-
-        if quality > targetQuality:
-            P1 = P
-        elif quality < targetQuality:
-            P2 = P
-        else:
-            return P
-        
-        if showGraph:
-            i += 1
-            plt.plot([i, i], [P1, P2])
-            plt.show(block=False)
-
-    print(quality)
-    
-    return (P1 + P2) / 2
 
 
 # lowest pressure seems to always be most efficient, not worth making a solver (for rankine anyway)
 # graph this anyway just to be sure
 def graph_reheater_pressure_vs_efficiency(parentCycle, turbineIndex, numPoints):
     minP = parentCycle.postTurbStates.P[turbineIndex]
-    maxP = parentCycle.preTurbStates.P[turbineIndex]
+    maxP = parentCycle.preTurbStates.P[turbineIndex] - 10
     # assuming already ran solve_rankine_reheater_pressures() or optimize_turbine_exit_pressure_for_quality() in rankine cycles
     # will not attempt pressures lower than the current value, if a pressure is already defined for that state
     if minP == None:
         minP = parentCycle.preTurbStates.P[turbineIndex + 1]
+    minP += 10
 
     pressures = []
     efficiencies = []
@@ -1503,31 +1297,6 @@ def graph_reheater_pressure_vs_efficiency(parentCycle, turbineIndex, numPoints):
     plt.show(block=False)
 
 
-"""" BAD
-def graph_reheater_temperature_vs_efficiency(parentCycle, turbineIndex, numPoints):
-    # will only check decreasing temperature. assumes increasing the temp is not an option
-    
-    minT = max([parentCycle.postTurbStates.T[turbineIndex], parentCycle.postTurbStates.T[turbineIndex + 1]])
-    maxT = parentCycle.preTurbStates.T[turbineIndex + 1]
-
-    temperatures = []
-    efficiencies = []
-    
-    for i in range(0, numPoints):
-        T = minT + (maxT - minT) * i / numPoints
-        cycle = parentCycle.copy()
-        cycle.change_reheater_temperature(T, turbineIndex)
-        cycle.solve_cp()
-
-        temperatures.append(T)
-        efficiencies.append(cycle.efficiency())
-
-    plt.figure()
-    plt.xlabel("Reheater " + str(turbineIndex) + " Temperature - $K$")
-    plt.ylabel("Cycle Efficiency")
-    plt.scatter(temperatures, efficiencies)
-    plt.show(block=False)
-"""
 
 def graph_turbine_inlet_temp_vs_optimized_rankine_efficiency(parentCycle, turbineIndex, minT, maxT, turbineExitQualities, numPoints, closedFeedwaterTempDiff=10, closedFeedwaterIndex=None):
     # only pass an unsolved cycle to this, otherwise will create very broken cycles
@@ -1568,8 +1337,8 @@ def rankine_optimize_turbine_inlet_temperature(parentCycle, turbineIndex, turbin
     
     solvedBase = parentCycle.copy()
     solvedBase.rankine_optimize_no_temp_changes(turbineExitQualities, feedwaterArgs=feedwaterArgs)
-    T1 = max([solvedBase.postTurbStates.T[turbineIndex - 1], solvedBase.postTurbStates.T[turbineIndex]])
-    T2 = solvedBase.preTurbStates.T[turbineIndex]
+    T1 = max([solvedBase.postTurbStates.T[turbineIndex - 1], solvedBase.postTurbStates.T[turbineIndex]]) + 5
+    T2 = solvedBase.preTurbStates.T[turbineIndex] - 5
     
     tolerance = 1
     i = 0
@@ -1587,9 +1356,78 @@ def rankine_optimize_turbine_inlet_temperature(parentCycle, turbineIndex, turbin
             i += 1
             plt.plot([i, i], [T1, T2])
             plt.show(block=False)
-            plt.pause(0.5)
 
     return (T1 + T2) / 2
+
+def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwaterArgs=None, showGraph=False):
+    if showGraph:
+        plt.figure()
+        plt.xlabel("iteration")
+        plt.ylabel("Pressure - $Pa$")
+        plt.title("Compressor Pressure Optimization Convergence")
+    
+    P2 = cp.PropsSI(parentCycle.postCompStates.fluid[-1].to_coolprop(), "pcrit") - 10
+    solvedParent = parentCycle.copy()
+    solvedParent.solve_cp()
+    solvedParent.propagate_assuming_no_pressure_losses()
+    solvedParent.solve_cp()
+    P1 = solvedParent.preCompStates.P[-1] + 10
+    
+    if showGraph:
+        plt.plot([-1, -1], [P1, P2])
+    
+    searchDelta = (P2 - P1) / 20
+    alreadyDecreased = False
+    
+    while P2 > P1:
+        cycle = parentCycle.copy()
+        cycle.postCompStates.P[-1] = P2
+        cycle.propagate_assuming_no_pressure_losses()
+        cycle.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        quality = cycle.postTurbStates.X[-1]
+        
+        if quality == -1:
+            quality = 1.1
+        
+        print(P2, quality)
+        
+        if quality >= turbineExitQualities:
+            P1 = P2
+            if alreadyDecreased:
+                P2 += searchDelta
+            break
+        
+        P2 -= searchDelta
+        alreadyDecreased = True
+
+    tolerance = 1
+    i = 0
+    while P2 - P1 > tolerance:
+        P = (P1 + P2) / 2
+        cycle = parentCycle.copy()
+        cycle.postCompStates.P[-1] = P
+        cycle.propagate_assuming_no_pressure_losses()
+        cycle.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        quality = cycle.postTurbStates.X[-1]
+        if quality == -1:
+            quality = 1.1
+        
+        print(P, quality)
+
+        if quality > turbineExitQualities:
+            P1 = P
+        elif quality < turbineExitQualities:
+            P2 = P
+        else:
+            return P
+
+        
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [P1, P2])
+            plt.show(block=False)
+
+    return (P1 + P2) / 2
 
 def init():
     multiprocessing.set_start_method('spawn')

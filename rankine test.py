@@ -9,6 +9,7 @@ if __name__ == "__main__":
     rankine.preCompStates.T = [273.15 + 40]
     rankine.preCompStates.X = [0]
     rankine.preTurbStates.T = [570 + 273.15, 570 + 273.15, None]
+    #rankine.preTurbStates.T = [570, 570, None]
     
     rankine.turbineEfficiencies = [0.87, 0.87, 0.87]
     rankine.compressorEfficiencies = [0.85]
