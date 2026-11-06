@@ -666,6 +666,8 @@ class Cycle: # should be valid for both rankine and brayton
                 self.postTurbStates.P[j] = reheaterPressure
                 self.propagate_assuming_no_pressure_losses()
                 self.solve_cp()
+                
+                #graph_reheater_pressure_vs_efficiency(self, j, 30)
 
     def remove_reheat_step(self, index): # also works for feedwater exit
         self.preTurbStates.pop(index + 1)
@@ -707,11 +709,15 @@ class Cycle: # should be valid for both rankine and brayton
         
         self.solve_rankine_reheater_pressures(-1, turbineExitQualities)
 
-    def rankine_optimize(self, turbineExitQualities, feedwaterArgs=None):
-        boilerPressure = rankine_optimize_boiler_pressure(self, turbineExitQualities, feedwaterArgs=feedwaterArgs, showGraph=True)
+    def rankine_optimize_fixed_target_quality(self, turbineExitQualities, feedwaterArgs=None):
+        boilerPressure = rankine_optimize_boiler_pressure(self, turbineExitQualities, feedwaterArgs=feedwaterArgs)
         self.postCompStates.P[-1] = boilerPressure
         self.propagate_assuming_no_pressure_losses()
         self.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+
+    def rankine_optimize(self, turbineExitQualities, feedwaterArgs=None):
+        turbineExitQualities = rankine_optimize_target_quality(self, turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        self.rankine_optimize_fixed_target_quality(turbineExitQualities, feedwaterArgs=feedwaterArgs)
         
 
 
@@ -1205,6 +1211,32 @@ def optimize_feedwater_pressure(parentCycle, tempDiff, turbineIndex, removeRehea
 
 
 
+def turbine_exit_pressure_efficiency_gradient(parentCycle, turbineIndex, pressure):
+    #Doesn't actually work because later turbines weren't defined whan this was called. So it just crashed
+    interval = 1
+    cycle1 = parentCycle.copy()
+    cycle2 = parentCycle.copy()
+    cycle1.postTurbStates.P[turbineIndex] = pressure - interval / 2
+    cycle2.postTurbStates.P[turbineIndex] = pressure + interval / 2
+    cycle1.propagate_assuming_no_pressure_losses()
+    cycle2.propagate_assuming_no_pressure_losses()
+    cycle1.solve_cp()
+    cycle2.solve_cp()
+    
+    print(cycle1.preTurbStates.P)
+    print(cycle1.postTurbStates.P)
+    print(cycle1.preTurbStates.v)
+    print(cycle1.postTurbStates.v)
+    print(cycle1.preTurbStates.h)
+    print(cycle1.postTurbStates.h)
+    print(cycle1.preTurbStates.T)
+    print(cycle1.postTurbStates.T)
+    
+    return (cycle2.efficiency() - cycle1.efficiency()) / interval
+    
+
+# TO DO: modify this to allow using a higher quality when it will increase efficiency:
+
 def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, targetQuality, showGraph=False):
     if showGraph:
         plt.figure()
@@ -1251,6 +1283,12 @@ def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, target
         elif quality < targetQuality:
             P1 = P
         elif quality > targetQuality:
+            # allow increasing quality above target if it will increase efficiency
+            #grad = turbine_exit_pressure_efficiency_gradient(parentCycle, turbineIndex, P)
+            #if grad > 0:
+            #    P1 = P
+            #else:
+            #    P2 = P
             P2 = P
         else:
             return P
@@ -1269,11 +1307,10 @@ def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, target
 
 # lowest pressure seems to always be most efficient, not worth making a solver (for rankine anyway)
 # graph this anyway just to be sure
+# only works on already fully solved cycle
 def graph_reheater_pressure_vs_efficiency(parentCycle, turbineIndex, numPoints):
     minP = parentCycle.postTurbStates.P[turbineIndex]
     maxP = parentCycle.preTurbStates.P[turbineIndex] - 10
-    # assuming already ran solve_rankine_reheater_pressures() or optimize_turbine_exit_pressure_for_quality() in rankine cycles
-    # will not attempt pressures lower than the current value, if a pressure is already defined for that state
     if minP == None:
         minP = parentCycle.preTurbStates.P[turbineIndex + 1]
     minP += 10
@@ -1389,8 +1426,6 @@ def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwate
         if quality == -1:
             quality = 1.1
         
-        print(P2, quality)
-        
         if quality >= turbineExitQualities:
             P1 = P2
             if alreadyDecreased:
@@ -1411,8 +1446,6 @@ def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwate
         quality = cycle.postTurbStates.X[-1]
         if quality == -1:
             quality = 1.1
-        
-        print(P, quality)
 
         if quality > turbineExitQualities:
             P1 = P
@@ -1428,6 +1461,34 @@ def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwate
             plt.show(block=False)
 
     return (P1 + P2) / 2
+
+
+def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterArgs=None):
+    interval = 0.001
+    cycle1 = parentCycle.copy()
+    cycle2 = parentCycle.copy()
+    cycle1.rankine_optimize_fixed_target_quality(quality - interval / 2, feedwaterArgs=feedwaterArgs)
+    cycle2.rankine_optimize_fixed_target_quality(quality + interval / 2, feedwaterArgs=feedwaterArgs)
+    return (cycle2.efficiency() - cycle1.efficiency()) / interval
+
+def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwaterArgs=None):
+    # starts with minimum quality for avoiding damaging blades, and tries to see if increasing quality will increase efficiency
+    X1 = turbineExitQualities
+    X2 = 1
+    while X2 - X1 > 0.005:
+        X = (X1 + X2) / 2
+        grad = rankine_target_quality_efficiency_gradient(parentCycle, X, feedwaterArgs=feedwaterArgs)
+        print("quality gradient:", X, grad)
+        
+        if grad > 0:
+            X1 = X
+        elif grad < 0:
+            X2 = X
+        else:
+            return X
+
+    return (X1 + X2) / 2
+
 
 def init():
     multiprocessing.set_start_method('spawn')

@@ -2,7 +2,7 @@ if __name__ == "__main__":
     import powerplant_designer as pd
     pd.init()
 
-    turbineExitQualities = 0.98
+    turbineExitQualities = 0.95
     feedwaterIndex = 1
 
     rankine = pd.Cycle(1, 3, pd.Mixture([["H2O", 1]]))
@@ -20,8 +20,6 @@ if __name__ == "__main__":
 
     rankine.print_design_info()
     rankine.print_energy_calcs()
-    
-    pd.plt.pause(3)
     rankineTS = rankine.ts_diagram(isRankine=True)
     rankineTS.set_title("Rankine Test Plot Ts")
     pd.plt.show(block=False)
