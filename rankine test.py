@@ -15,9 +15,11 @@ if __name__ == "__main__":
     rankine.compressorEfficiencies = [0.85]
     
     rankine.propagate_assuming_no_pressure_losses()
-    
-    rankine.rankine_optimize(turbineExitQualities, feedwaterArgs=[10, feedwaterIndex, True])
 
+    pd.graph_turbine_exit_quality_vs_boiler_pressure(rankine, turbineExitQualities, 10, feedwaterArgs=[10, feedwaterIndex, True])
+    rankine.rankine_optimize(turbineExitQualities, feedwaterArgs=[10, feedwaterIndex, True])
+    #rankine.rankine_optimize_fixed_target_quality(turbineExitQualities, feedwaterArgs=[10, feedwaterIndex, True])
+    
     rankine.print_design_info()
     rankine.print_energy_calcs()
     rankineTS = rankine.ts_diagram(isRankine=True)
