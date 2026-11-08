@@ -821,7 +821,7 @@ class Cycle: # should be valid for both rankine and brayton
         for i in range(0, len(self.postTurbStates.P)):
             print("Turbine", i, "pressure ratio:", self.preTurbStates.P[i] / self.postTurbStates.P[i])
             if self.postTurbStates.X[i] == -1:
-                print("          exit quality: saturated")
+                print("          exit quality: superheated vapour")
             else:
                 print("          exit quality:", self.postTurbStates.X[i])
         if self.closedFeedwaterMassRatio > 0:
@@ -1204,8 +1204,6 @@ def turbine_exit_pressure_efficiency_gradient(parentCycle, turbineIndex, pressur
     return (cycle2.efficiency() - cycle1.efficiency()) / interval
     
 
-# TO DO: modify this to allow using a higher quality when it will increase efficiency:
-
 def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, targetQuality, showGraph=False):
     if showGraph:
         plt.figure()
@@ -1294,13 +1292,17 @@ def rankine_turbine_inlet_temp_efficiency_gradient(parentCycle, temp, turbineInd
     cycle2.rankine_optimize_no_temp_changes(turbineExitQualities, feedwaterArgs=feedwaterArgs)
 
     X1 = cycle1.postTurbStates.X[-1]
-    X2 = cycle1.postTurbStates.X[-1]
+    X2 = cycle2.postTurbStates.X[-1]
+
+    if X1 == -1:
+        X1 = 1.1
+    if X2 == -1:
+        X2 = 1.1
 
     # prevent decreasing temperature too much to a point it decreases quality past limits,
     # which would make other parts of the code kill efficiency:
-    qualityGradient = (X2 - X1) / interval
     if X1 < turbineExitQualities or X2 < turbineExitQualities:
-        return qualityGradient
+        return 1
     
     return (cycle2.efficiency() - cycle1.efficiency()) / interval
 
@@ -1334,7 +1336,7 @@ def rankine_optimize_turbine_inlet_temperature(parentCycle, turbineIndex, turbin
             plt.plot([i, i], [T1, T2])
             plt.show(block=False)
 
-    return (T1 + T2) / 2
+    return T2 # use upper bound, not average to avoid risk of ending up just under required quality
 
 
 def graph_turbine_exit_quality_vs_boiler_pressure(parentCycle, turbineExitQualities, numPoints, feedwaterArgs=None):
@@ -1433,7 +1435,31 @@ def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwate
             plt.plot([i, i], [P1, P2])
             plt.show(block=False)
 
-    return (P1 + P2) / 2
+    return P1  # use lower bound, not average to avoid risk of ending up just under required quality
+
+
+def rankine_fixed_quality_efficiency_worker(cycle, quality, feedwaterArgs):
+    cycle.rankine_optimize_fixed_target_quality(quality, feedwaterArgs=feedwaterArgs)
+    return cycle.efficiency()
+
+
+def graph_efficiency_vs_target_quality(parentCycle, minQuality, numPoints, feedwaterArgs=None):
+    tasks = []
+    qualities = []
+    for i in range(0, numPoints):
+        X = minQuality + (1 - minQuality) * i / numPoints
+        tasks.append([parentCycle.copy(), X, feedwaterArgs])
+        qualities.append(X)
+    with multiprocessing.Pool(processes=3) as pool:
+        efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
+
+    plt.figure()
+    plt.xlabel("Target Turbine Exit Quality")
+    plt.ylabel("Efficiency")
+    plt.scatter(qualities, efficiencies)
+    plt.show(block=False)
+    
+
 
 
 # will have to look more into this, I don't think the newton-raphson is working
@@ -1442,9 +1468,16 @@ def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterAr
     interval = 0.001
     cycle1 = parentCycle.copy()
     cycle2 = parentCycle.copy()
-    cycle1.rankine_optimize_fixed_target_quality(quality - interval / 2, feedwaterArgs=feedwaterArgs)
-    cycle2.rankine_optimize_fixed_target_quality(quality + interval / 2, feedwaterArgs=feedwaterArgs)
-    return (cycle2.efficiency() - cycle1.efficiency()) / interval
+    #cycle1.rankine_optimize_fixed_target_quality(quality - interval / 2, feedwaterArgs=feedwaterArgs)
+    #cycle2.rankine_optimize_fixed_target_quality(quality + interval / 2, feedwaterArgs=feedwaterArgs)
+    #return (cycle2.efficiency() - cycle1.efficiency()) / interval
+
+    tasks = [[cycle1, quality - interval / 2, feedwaterArgs], [cycle2, quality + interval / 2, feedwaterArgs]]
+    
+    with multiprocessing.Pool(processes=2) as pool:
+        efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
+    return (efficiencies[1] - efficiencies[0]) / 2
+    
 
 def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwaterArgs=None):
     # starts with minimum quality for avoiding damaging blades, and tries to see if increasing quality will increase efficiency
