@@ -807,6 +807,15 @@ class Cycle: # should be valid for both rankine and brayton
     def back_work(self):
         return self.w_in() / self.w_out()
 
+    def efficiency_2nd_law(self):
+        T_H = max(self.preTurbStates.T)
+        T_C = min(self.preCompStates.T)
+        carnot = 1 - T_C / T_H
+        return self.efficiency() / carnot
+
+    def fuel_efficiency(self):
+        return self.w_net() / self.addedFuelMassFrac
+
     def print_design_info(self):
         print()
         print("---------------------------------------------------------------")
@@ -874,6 +883,7 @@ class Cycle: # should be valid for both rankine and brayton
         print()
         print("Net work:", self.w_net())
         print("Efficiency:", self.efficiency())
+        print("2nd Law Efficiency:", self.efficiency_2nd_law())
         print("Back-work ratio:", self.back_work())
         if self.recycledHeat > self.heat_exchanger_heat():
             print()
@@ -881,6 +891,9 @@ class Cycle: # should be valid for both rankine and brayton
         if self.closedFeedwaterMassRatio >= 1:
             print()
             print("WARNING: feedwater mass fraction > 1")
+        if self.efficiency_2nd_law() > 1:
+            print()
+            print("WARNING: somehow beat Carnot efficiency")
         print()
         print("---------------------------------------------------------------")
         print()
@@ -1083,7 +1096,34 @@ class Cycle: # should be valid for both rankine and brayton
             self.preCompStates.fluid[0].pie_chart(title, ax=axs[0])
 
 
+class CombinedBraytonRankineCycle:
+    def __init__(self, brayton, rankine):
+        self.brayton = brayton
+        self.rankine = rankine
+        self.braytonFlowRate = 1 # brayton flow rate / rankine flow rate
+        self.transferedHeat = 0  # heat transefer from brayton to rankine
 
+    def q_in(self): # assuming no heat recycling within each cycle
+        return brayton.q_in() * self.braytonFlowRate + rankine.q_in() - self.transferedHeat
+
+    def q_out(self): # assuming no heat recycling within each cycle
+        return brayton.q_out() * self.braytonFlowRate + rankine.q_out() - self.transferedHeat
+
+    def w_in(self):
+        return brayton.w_in() * self.braytonFlowRate + rankine.w_in()
+
+    def w_out(self):
+        return brayton.w_out() * self.braytonFlowRate + rankine.w_out()
+
+    def w_net(self):
+        return self.w_out() - self.w_in()
+
+    def efficiency(self):
+        return self.w_net() / (self.q_in() - brayton.recycledHeat * self.braytonFlowRate - rankine.recycledHeat)
+
+    def fuel_efficiency(self):
+        return self.w_net() / (brayton.addedFuelMassFrac * self.braytonFlowRate)
+    
 
 
 def graph_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, minFrac, maxFrac, numPoints):
@@ -1095,6 +1135,23 @@ def graph_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficien
         cycle.inject_fuel_after_compressor(Mixture([["CH4", 1]]), frac, fuelCompressorEfficiency)
         cycle.combust()
         efficiencies.append(cycle.efficiency())
+        fracs.append(frac)
+    
+    plt.figure()
+    plt.xlabel("Fuel Mass fraction")
+    plt.ylabel("Cycle Efficiency")
+    plt.scatter(fracs, efficiencies)
+    plt.show(block=False)
+
+def graph_fuel_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, minFrac, maxFrac, numPoints):
+    fracs = []
+    efficiencies = []
+    for i in range(0, numPoints):
+        frac = minFrac + (maxFrac - minFrac) * i / numPoints
+        cycle = copy.deepcopy(parentCycle)
+        cycle.inject_fuel_after_compressor(Mixture([["CH4", 1]]), frac, fuelCompressorEfficiency)
+        cycle.combust()
+        efficiencies.append(cycle.fuel_efficiency())
         fracs.append(frac)
     
     plt.figure()
@@ -1439,8 +1496,11 @@ def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwate
 
 
 def rankine_fixed_quality_efficiency_worker(cycle, quality, feedwaterArgs):
-    cycle.rankine_optimize_fixed_target_quality(quality, feedwaterArgs=feedwaterArgs)
-    return cycle.efficiency()
+    try:
+        cycle.rankine_optimize_fixed_target_quality(quality, feedwaterArgs=feedwaterArgs)
+        return cycle.efficiency()
+    except:
+        return None
 
 
 def graph_efficiency_vs_target_quality(parentCycle, minQuality, numPoints, feedwaterArgs=None):
@@ -1468,9 +1528,6 @@ def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterAr
     interval = 0.001
     cycle1 = parentCycle.copy()
     cycle2 = parentCycle.copy()
-    #cycle1.rankine_optimize_fixed_target_quality(quality - interval / 2, feedwaterArgs=feedwaterArgs)
-    #cycle2.rankine_optimize_fixed_target_quality(quality + interval / 2, feedwaterArgs=feedwaterArgs)
-    #return (cycle2.efficiency() - cycle1.efficiency()) / interval
 
     tasks = [[cycle1, quality - interval / 2, feedwaterArgs], [cycle2, quality + interval / 2, feedwaterArgs]]
     
@@ -1484,7 +1541,7 @@ def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwater
     X1 = turbineExitQualities
     X2 = 1
     while X2 - X1 > 0.005:
-        X = (X1 + X2) / 2
+        X = (2*X1 + X2) / 3
         grad = rankine_target_quality_efficiency_gradient(parentCycle, X, feedwaterArgs=feedwaterArgs)
         print("quality gradient:", X, grad)
         
