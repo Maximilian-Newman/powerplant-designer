@@ -11,7 +11,12 @@ import multiprocessing
 def parse(text):
     if text == "None":
         return None
-    return float(text)
+
+    f = float(text)
+    i = int(f)
+    if f == i:
+        return i
+    return f
 
 CEA_TO_COOLPROP_NAMES = {
     "CH4" : "Methane",
@@ -161,12 +166,12 @@ class Mixture:
             text += part[0] + "," + str(part[1])
             if len(part) > 2:
                 text += "," + str(part[2])
-            text += ";"
+            text += "+"
         return text[:-1]
 
     def from_save_str(self, text):
         self.data = []
-        text = text.split(";")
+        text = text.split("+")
         for line in text:
             line = line.split(",")
             line[1] = float(line[1])
@@ -327,13 +332,24 @@ class SetOfStates():
         text = text[:-1] + "\nX="
         for val in self.X:
             text += str(val) + ","
+
+        text = text[:-1] + "\nfluid="
+        for fluid in self.fluid:
+            text += fluid.to_save_str() + ";"
+        
         return text[:-1]
 
     def from_save_str(self, text):
-        for line in text.splli("\n"):
+        for line in text.split("\n"):
+            print(line)
+            if line == "":
+                continue
             prop, data = line.split("=")
-            for i in range(0, len(data)):
-                data[i] = parse(data[i])
+            data = data.split(",")
+
+            if prop != "fluid":
+                for i in range(0, len(data)):
+                    data[i] = parse(data[i])
             
             if prop == "T":
                 self.T = data
@@ -347,6 +363,15 @@ class SetOfStates():
                 self.s = data
             elif prop == "X":
                 self.X = data
+
+            elif prop == "fluid":
+                self.fluid = []
+                data = ",".join(data)
+                data = data.split(";")
+                for f in data:
+                    mix = Mixture()
+                    mix.from_save_str(f)
+                    self.fluid.append(mix)
 
             else:
                 print("ERROR: unknown property '", prop, "' from save file")
@@ -499,6 +524,69 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
 
 
 
+def load_cycle(path):
+    if not path.lower().endswith(".txt"):
+        path += ".txt" # .pdc = 'Powerplant Designer Cycle'
+
+    file = open(path, "r")
+    data = file.read().split("\n<><>\n")
+    file.close()
+
+    misc = data[0]
+    states = data[1:]
+
+    cycle = Cycle(0, 0, None)
+
+    for line in misc.split("\n"):
+        prop, val = line.split("=")
+
+        if prop == "externalFuelCompressionWork":
+            cycle.externalFuelCompressionWork = parse(val)
+        elif prop == "addedFuelMassFrac":
+            cycle.addedFuelMassFrac = parse(val)
+        elif prop == "addedFuelInitialEnthalpy":
+            cycle.addedFuelInitialEnthalpy = parse(val)
+        elif prop == "recycledHeat":
+            cycle.recycledHeat = parse(val)
+        elif prop == "closedFeedwaterMassRatio":
+            cycle.closedFeedwaterMassRatio = parse(val)
+        elif prop == "turbineMassRatios":
+            cycle.turbineMassRatios = []
+            for m in val.split(","):
+                cycle.turbineMassRatios.append(parse(m))
+        elif prop == "closedFeedwaterExitEnthalpy":
+            cycle.closedFeedwaterExitEnthalpy = parse(val)
+        elif prop == "closedFeedwaterHeatTransfer":
+            cycle.closedFeedwaterHeatTransfer = parse(val)
+        elif prop == "closedFeedwaterTurbineIndex":
+            cycle.closedFeedwaterTurbineIndex = parse(val)
+        elif prop == "turbineEfficiencies":
+            cycle.turbineEfficiencies = []
+            for e in val.split(","):
+                cycle.turbineEfficiencies.append(parse(e))
+        elif prop == "compressorEfficiencies":
+            cycle.compressorEfficiencies = []
+            for e in val.split(","):
+                cycle.compressorEfficiencies.append(parse(e))
+
+    for stateList in states:
+        name, data = stateList.split("<>\n")
+        if name == "preCompStates":
+            cycle.preCompStates.from_save_str(data)
+        if name == "postCompStates":
+            cycle.postCompStates.from_save_str(data)
+        if name == "heatingStates":
+            cycle.heatingStates.from_save_str(data)
+        if name == "preTurbStates":
+            cycle.preTurbStates.from_save_str(data)
+        if name == "postTurbStates":
+            cycle.postTurbStates.from_save_str(data)
+
+
+
+    return cycle
+
+
 
 class Cycle: # should be valid for both rankine and brayton
     def __init__(self, numComp, numTurb, fluid):
@@ -512,7 +600,7 @@ class Cycle: # should be valid for both rankine and brayton
         
         self.externalFuelCompressionWork = 0 # work to pressurize fuel before injecting it into combustion chamber
         self.addedFuelMassFrac = 0
-        self.addefFuelInitialEnthalpy = 0
+        self.addedFuelInitialEnthalpy = 0
         self.recycledHeat = 0
         self.closedFeedwaterMassRatio = 0
         self.turbineMassRatios = [1] * numTurb # fraction left at each stage after removal from feedwater heater
@@ -527,14 +615,44 @@ class Cycle: # should be valid for both rankine and brayton
         return copy.deepcopy(self)
 
     def save(self, path):
-        if not path.lower().endswith(".pdc"):
-            path += ".pdc" # .pdc = 'Powerplant Designer Cycle'
+        if not path.lower().endswith(".txt"):
+            path += ".txt" # .pdc = 'Powerplant Designer Cycle'
         data = ""
 
-        # continue here
+        data += "externalFuelCompressionWork=" + str(self.externalFuelCompressionWork) + "\n"
+        data += "addedFuelMassFrac=" + str(self.addedFuelMassFrac) + "\n"
+        data += "addedFuelInitialEnthalpy=" + str(self.addedFuelInitialEnthalpy) + "\n"
+        data += "recycledHeat=" + str(self.recycledHeat) + "\n"
+        data += "closedFeedwaterMassRatio=" + str(self.closedFeedwaterMassRatio) + "\n"
+        data += "turbineMassRatios="
+        for r in self.turbineMassRatios:
+            data += str(r) + ","
+        data = data[:-1] + "\n"
+        data += "closedFeedwaterExitEnthalpy=" + str(self.closedFeedwaterExitEnthalpy) + "\n"
+        data += "closedFeedwaterHeatTransfer=" + str(self.closedFeedwaterHeatTransfer) + "\n"
+        data += "closedFeedwaterTurbineIndex=" + str(self.closedFeedwaterTurbineIndex) + "\n"
+        data += "turbineEfficiencies="
+        for e in self.turbineEfficiencies:
+            data += str(e) + ","
+        data = data[:-1] + "\n"
+        data += "compressorEfficiencies="
+        for e in self.compressorEfficiencies:
+            data += str(e) + ","
+        data = data[:-1] + "\n"
+
+        data += "<><>\npreCompStates<>\n"
+        data += self.preCompStates.to_save_str() + "\n"
+        data += "<><>\npostCompStates<>\n"
+        data += self.postCompStates.to_save_str() + "\n"
+        data += "<><>\nheatingStates<>\n"
+        data += self.heatingStates.to_save_str() + "\n"
+        data += "<><>\npreTurbStates<>\n"
+        data += self.preTurbStates.to_save_str() + "\n"
+        data += "<><>\npostTurbStatess<>\n"
+        data += self.postTurbStates.to_save_str() + "\n"
 
         file = open(path, "w")
-        file.write(data)
+        file.write(data[:-1])
         file.close()
         
         
@@ -620,7 +738,7 @@ class Cycle: # should be valid for both rankine and brayton
         h1 = h0 + (h1 - h0) / fuelCompressorEfficiency
         fuelTemp = cp.PropsSI("T", "P", self.heatingStates.P[0], "Hmass", h1, fuelMixture.to_coolprop())
         self.externalFuelCompressionWork = (h1 - h0) * fuelTotalMassFraction
-        self.addefFuelInitialEnthalpy = h0
+        self.addedFuelInitialEnthalpy = h0
 
         M_oxidiser = cp.PropsSI("molar_mass", "P", self.heatingStates.P[0], "T", self.heatingStates.T[0], self.heatingStates.fluid[0].to_coolprop())
         M_fuel = cp.PropsSI("molar_mass", "P", self.heatingStates.P[0], "T", fuelTemp, fuelMixture.to_coolprop())
@@ -835,7 +953,7 @@ class Cycle: # should be valid for both rankine and brayton
     def return_heat(self):
         self.postTurbStates.make_consistent(True)
         self.preCompStates.make_consistent(True)
-        fuel = (self.postTurbStates.h[-1] - self.addefFuelInitialEnthalpy) * self.addedFuelMassFrac * self.turbineMassRatios[-1]
+        fuel = (self.postTurbStates.h[-1] - self.addedFuelInitialEnthalpy) * self.addedFuelMassFrac * self.turbineMassRatios[-1]
         air = (self.postTurbStates.h[-1] - self.preCompStates.h[0]) * (1 - self.addedFuelMassFrac) * self.turbineMassRatios[-1]
         feedwater = (self.closedFeedwaterExitEnthalpy - self.preCompStates.h[0]) * self.closedFeedwaterMassRatio
         
@@ -856,7 +974,7 @@ class Cycle: # should be valid for both rankine and brayton
         else:
             self.heatingStates.make_consistent(True)
             self.preTurbStates.make_consistent(True)
-            fuel = (self.preTurbStates.h[0] - self.addefFuelInitialEnthalpy - self.externalFuelCompressionWork) * self.addedFuelMassFrac
+            fuel = (self.preTurbStates.h[0] - self.addedFuelInitialEnthalpy - self.externalFuelCompressionWork) * self.addedFuelMassFrac
             air = (self.preTurbStates.h[0] - self.heatingStates.h[0]) * (1 - self.addedFuelMassFrac)
             return fuel + air
 

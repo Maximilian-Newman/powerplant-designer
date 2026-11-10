@@ -23,6 +23,7 @@ if __name__ == "__main__":
     
     rankine.print_design_info()
     rankine.print_energy_calcs()
+    rankine.save("rankine.txt")
     rankineTS = rankine.ts_diagram(isRankine=True)
     rankineTS.set_title("Rankine Test Plot Ts")
     pd.plt.show(block=False)
