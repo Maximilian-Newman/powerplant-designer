@@ -2,7 +2,7 @@ if __name__ == "__main__":
     import powerplant_designer as pd
     pd.init()
 
-    turbineExitQualities = 0.95
+    turbineExitQualities = 0.9
     feedwaterIndex = 1
 
     rankine = pd.Cycle(1, 3, pd.Mixture([["H2O", 1]]))
@@ -16,16 +16,10 @@ if __name__ == "__main__":
     
     rankine.propagate_assuming_no_pressure_losses()
 
-    #pd.graph_turbine_exit_quality_vs_boiler_pressure(rankine, turbineExitQualities, 10, feedwaterArgs=[10, feedwaterIndex, True])
-    pd.graph_efficiency_vs_target_quality(rankine, 0.8, 10, feedwaterArgs=[10, feedwaterIndex, True])
-    pd.plt.pause(5)
+    #pd.graph_efficiency_vs_target_quality(rankine, turbineExitQualities-0.05, 10, feedwaterArgs=[10, feedwaterIndex, True])
+    #pd.plt.pause(5)
     
     rankine.rankine_optimize(turbineExitQualities, feedwaterArgs=[10, feedwaterIndex, True])
-    #rankine.rankine_optimize_fixed_target_quality(turbineExitQualities, feedwaterArgs=[10, feedwaterIndex, True])
-
-    #rankine.postCompStates.P[-1] = pd.cp.PropsSI("Water", "pcrit") - 20
-    #rankine.propagate_assuming_no_pressure_losses()
-    #rankine.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=[10, feedwaterIndex, True])
     
     rankine.print_design_info()
     rankine.print_energy_calcs()

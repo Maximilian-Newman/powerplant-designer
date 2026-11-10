@@ -8,6 +8,11 @@ import copy
 import numpy as np
 import multiprocessing
 
+def parse(text):
+    if text == "None":
+        return None
+    return float(text)
+
 CEA_TO_COOLPROP_NAMES = {
     "CH4" : "Methane",
     "O2" : "Oxygen",
@@ -150,6 +155,25 @@ class Mixture:
         plt.tight_layout()
         plt.show(block=False)
 
+    def to_save_str(self):
+        text = ""
+        for part in self.data:
+            text += part[0] + "," + str(part[1])
+            if len(part) > 2:
+                text += "," + str(part[2])
+            text += ";"
+        return text[:-1]
+
+    def from_save_str(self, text):
+        self.data = []
+        text = text.split(";")
+        for line in text:
+            line = line.split(",")
+            line[1] = float(line[1])
+            if len(line) > 2:
+                line[2] = float(line[2])
+            self.data.append(line)
+
 def AIR():
     return Mixture([["N2", 0.78084], ["O2", 0.20946], ["Ar", 0.00934], ["CO2", 0.000412], ["Ne", 0.00001818]])
     # from https://www.engineeringtoolbox.com/air-composition-d_212.html
@@ -283,6 +307,50 @@ class SetOfStates():
             return self.s[i]
         if symbol == "X":
             return self.X[i]
+
+    def to_save_str(self):
+        text = "T="
+        for val in self.T:
+            text += str(val) + ","
+        text = text[:-1] + "\nP="
+        for val in self.P:
+            text += str(val) + ","
+        text = text[:-1] + "\nv="
+        for val in self.v:
+            text += str(val) + ","
+        text = text[:-1] + "\nh="
+        for val in self.h:
+            text += str(val) + ","
+        text = text[:-1] + "\ns="
+        for val in self.s:
+            text += str(val) + ","
+        text = text[:-1] + "\nX="
+        for val in self.X:
+            text += str(val) + ","
+        return text[:-1]
+
+    def from_save_str(self, text):
+        for line in text.splli("\n"):
+            prop, data = line.split("=")
+            for i in range(0, len(data)):
+                data[i] = parse(data[i])
+            
+            if prop == "T":
+                self.T = data
+            elif prop == "P":
+                self.P = data
+            elif prop == "v":
+                self.v = data
+            elif prop == "h":
+                self.h = data
+            elif prop == "s":
+                self.s = data
+            elif prop == "X":
+                self.X = data
+
+            else:
+                print("ERROR: unknown property '", prop, "' from save file")
+        
 
 
 
@@ -457,6 +525,18 @@ class Cycle: # should be valid for both rankine and brayton
 
     def copy(self):
         return copy.deepcopy(self)
+
+    def save(self, path):
+        if not path.lower().endswith(".pdc"):
+            path += ".pdc" # .pdc = 'Powerplant Designer Cycle'
+        data = ""
+
+        # continue here
+
+        file = open(path, "w")
+        file.write(data)
+        file.close()
+        
         
 
     def combined_states(self):
@@ -1104,25 +1184,25 @@ class CombinedBraytonRankineCycle:
         self.transferedHeat = 0  # heat transefer from brayton to rankine
 
     def q_in(self): # assuming no heat recycling within each cycle
-        return brayton.q_in() * self.braytonFlowRate + rankine.q_in() - self.transferedHeat
+        return self.brayton.q_in() * self.braytonFlowRate + self.rankine.q_in() - self.transferedHeat
 
     def q_out(self): # assuming no heat recycling within each cycle
-        return brayton.q_out() * self.braytonFlowRate + rankine.q_out() - self.transferedHeat
+        return self.brayton.q_out() * self.braytonFlowRate + self.rankine.q_out() - self.transferedHeat
 
     def w_in(self):
-        return brayton.w_in() * self.braytonFlowRate + rankine.w_in()
+        return self.brayton.w_in() * self.braytonFlowRate + self.rankine.w_in()
 
     def w_out(self):
-        return brayton.w_out() * self.braytonFlowRate + rankine.w_out()
+        return self.brayton.w_out() * self.braytonFlowRate + self.rankine.w_out()
 
     def w_net(self):
         return self.w_out() - self.w_in()
 
     def efficiency(self):
-        return self.w_net() / (self.q_in() - brayton.recycledHeat * self.braytonFlowRate - rankine.recycledHeat)
+        return self.w_net() / (self.q_in() - self.brayton.recycledHeat * self.braytonFlowRate - self.rankine.recycledHeat)
 
     def fuel_efficiency(self):
-        return self.w_net() / (brayton.addedFuelMassFrac * self.braytonFlowRate)
+        return self.w_net() / (self.brayton.addedFuelMassFrac * self.braytonFlowRate)
     
 
 
@@ -1235,30 +1315,6 @@ def optimize_feedwater_pressure(parentCycle, tempDiff, turbineIndex, removeRehea
     return (P1 + P2) / 2
 
 
-
-
-def turbine_exit_pressure_efficiency_gradient(parentCycle, turbineIndex, pressure):
-    #Doesn't actually work because later turbines weren't defined whan this was called. So it just crashed
-    interval = 1
-    cycle1 = parentCycle.copy()
-    cycle2 = parentCycle.copy()
-    cycle1.postTurbStates.P[turbineIndex] = pressure - interval / 2
-    cycle2.postTurbStates.P[turbineIndex] = pressure + interval / 2
-    cycle1.propagate_assuming_no_pressure_losses()
-    cycle2.propagate_assuming_no_pressure_losses()
-    cycle1.solve_cp()
-    cycle2.solve_cp()
-    
-    print(cycle1.preTurbStates.P)
-    print(cycle1.postTurbStates.P)
-    print(cycle1.preTurbStates.v)
-    print(cycle1.postTurbStates.v)
-    print(cycle1.preTurbStates.h)
-    print(cycle1.postTurbStates.h)
-    print(cycle1.preTurbStates.T)
-    print(cycle1.postTurbStates.T)
-    
-    return (cycle2.efficiency() - cycle1.efficiency()) / interval
     
 
 def optimize_turbine_exit_pressure_for_quality(parentCycle, turbineIndex, targetQuality, showGraph=False):
@@ -1500,7 +1556,7 @@ def rankine_fixed_quality_efficiency_worker(cycle, quality, feedwaterArgs):
         cycle.rankine_optimize_fixed_target_quality(quality, feedwaterArgs=feedwaterArgs)
         return cycle.efficiency()
     except:
-        return None
+        return 0
 
 
 def graph_efficiency_vs_target_quality(parentCycle, minQuality, numPoints, feedwaterArgs=None):
@@ -1529,21 +1585,54 @@ def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterAr
     cycle1 = parentCycle.copy()
     cycle2 = parentCycle.copy()
 
+    if quality + interval/2 > 1:
+        excess = 1 - quality - interval/2
+        quality -= excess / 2
+        interval -= excess
+
     tasks = [[cycle1, quality - interval / 2, feedwaterArgs], [cycle2, quality + interval / 2, feedwaterArgs]]
     
     with multiprocessing.Pool(processes=2) as pool:
         efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
+
+    #if None in efficiencies:
+        # sometimes crashes when quality is too low, so make the optimizer pick a higher quality
+    #    return 1
     return (efficiencies[1] - efficiencies[0]) / 2
     
 
 def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwaterArgs=None):
     # starts with minimum quality for avoiding damaging blades, and tries to see if increasing quality will increase efficiency
+
+
+    # checking minimum quality and saturated first, faster in most cases
+    cycle1 = parentCycle.copy()
+    cycle2 = parentCycle.copy()
+    cycle3 = parentCycle.copy()
+    cycle4 = parentCycle.copy()
+
+    tasks = [[cycle1, turbineExitQualities, feedwaterArgs],
+             [cycle2, turbineExitQualities + 0.001, feedwaterArgs],
+             [cycle3, 0.999, feedwaterArgs],
+             [cycle4, 1, feedwaterArgs]]
+
+    with multiprocessing.Pool(processes=4) as pool:
+        efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
+
+    #print(efficiencies)
+
+    if efficiencies[0] == max(efficiencies):
+        return turbineExitQualities
+    if efficiencies[3] == max(efficiencies):
+        return 1
+
+    
     X1 = turbineExitQualities
     X2 = 1
     while X2 - X1 > 0.005:
-        X = (2*X1 + X2) / 3
+        X = (X1 + X2) / 2
         grad = rankine_target_quality_efficiency_gradient(parentCycle, X, feedwaterArgs=feedwaterArgs)
-        print("quality gradient:", X, grad)
+        #print("quality gradient:", X, grad)
         
         if grad > 0:
             X1 = X
