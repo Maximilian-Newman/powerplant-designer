@@ -341,7 +341,6 @@ class SetOfStates():
 
     def from_save_str(self, text):
         for line in text.split("\n"):
-            print(line)
             if line == "":
                 continue
             prop, data = line.split("=")
@@ -525,8 +524,8 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
 
 
 def load_cycle(path):
-    if not path.lower().endswith(".txt"):
-        path += ".txt" # .pdc = 'Powerplant Designer Cycle'
+    if not path.lower().endswith(".pdc"):
+        path += ".pdc" # .pdc = 'Powerplant Designer Cycle'
 
     file = open(path, "r")
     data = file.read().split("\n<><>\n")
@@ -615,8 +614,8 @@ class Cycle: # should be valid for both rankine and brayton
         return copy.deepcopy(self)
 
     def save(self, path):
-        if not path.lower().endswith(".txt"):
-            path += ".txt" # .pdc = 'Powerplant Designer Cycle'
+        if not path.lower().endswith(".pdc"):
+            path += ".pdc" # .pdc = 'Powerplant Designer Cycle'
         data = ""
 
         data += "externalFuelCompressionWork=" + str(self.externalFuelCompressionWork) + "\n"
@@ -1082,6 +1081,8 @@ class Cycle: # should be valid for both rankine and brayton
         print("Net work:", self.w_net())
         print("Efficiency:", self.efficiency())
         print("2nd Law Efficiency:", self.efficiency_2nd_law())
+        if self.addedFuelMassFrac != 0:
+            print("Fuel Efficiency (w_net / m_fuel):", self.fuel_efficiency())
         print("Back-work ratio:", self.back_work())
         if self.recycledHeat > self.heat_exchanger_heat():
             print()
@@ -1100,7 +1101,36 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
-
+    def print_all_states(self):
+        allPoints = self.combined_states()
+        allPoints.make_consistent(True)
+        if self.closedFeedwaterTurbineIndex != None:
+            feedwaterPoints = self.get_closed_feedwater_states()
+            feedwaterPoints.pop(0)
+            allPoints.extend(feedwaterPoints)
+        
+        print()
+        print("---------------------------------------------------------------")
+        print()
+        print("All cycle states:")
+        print()
+        for i in range(0, len(allPoints.T)):
+            print()
+            print("State", i)
+            print("T =", allPoints.T[i], "K")
+            print("P =", allPoints.P[i], "Pa")
+            print("v =", allPoints.v[i], "m^3/kg")
+            print("h =", allPoints.h[i], "kJ/kg")
+            print("s =", allPoints.s[i], "kJ/kgK")
+            if allPoints.X[i] != -1:
+                print("X =", allPoints.X[i])
+            else:
+                print("X = superheated or subcooled")
+            print("fluid =", allPoints.fluid[i].to_save_str())
+        
+        print()
+        print("---------------------------------------------------------------")
+        print()
 
 
 
@@ -1198,7 +1228,10 @@ class Cycle: # should be valid for both rankine and brayton
         intermediates.extend(get_intermediate_points(feedwaterStates, 0, feedwaterStates, 1, ["P", "s"]))
         intermediates.extend(get_intermediate_points(feedwaterStates, 1, feedwaterStates, 2, ["h", "P"], numPoints=5))
 
+        ax.scatter(feedwaterStates.s, feedwaterStates.T, marker="o", s=50)
         ax.plot(intermediates.s, intermediates.T, marker=".")
+        for i in range(1, len(feedwaterStates.s)):
+            ax.text(feedwaterStates.s[i], feedwaterStates.T[i], str(i-1 + len(self.combined_states().T)), fontsize=20)
         
 
     
@@ -1213,11 +1246,16 @@ class Cycle: # should be valid for both rankine and brayton
 
         x = []
         y = []
+        stateLabels = []
         for i in range(0, len(allPoints.T)):
             x.append(allPoints.s[i])
             y.append(allPoints.T[i])
+            stateLabels.append(str(i))
 
         ax.scatter(x, y, label=label, marker="o", s=50)
+
+        for i in range(0, len(x)):
+            ax.text(x[i], y[i], stateLabels[i], fontsize=20)
 
         
         
@@ -1259,11 +1297,16 @@ class Cycle: # should be valid for both rankine and brayton
 
         x = []
         y = []
+        stateLabels = []
         for i in range(0, len(allPoints.T)):
             x.append(allPoints.v[i])
             y.append(allPoints.P[i])
+            stateLabels.append(str(i))
 
         ax.scatter(x, y, label=label, marker="o", s=50)
+
+        for i in range(0, len(x)):
+            ax.text(x[i], y[i], stateLabels[i], fontsize=20)
 
         
         
@@ -1354,7 +1397,7 @@ def graph_fuel_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEff
     
     plt.figure()
     plt.xlabel("Fuel Mass fraction")
-    plt.ylabel("Cycle Efficiency")
+    plt.ylabel("Fuel Efficiency ($w_{out} / \\dot{m}_{fuel}$)")
     plt.scatter(fracs, efficiencies)
     plt.show(block=False)
 
