@@ -594,6 +594,7 @@ class Cycle: # should be valid for both rankine and brayton
         self.heatingStates = SetOfStates(2, copy.deepcopy(fluid)) # heatingStates = [before fuel injected, before combustion but after fuel injected]
         self.preTurbStates = SetOfStates(numTurb, copy.deepcopy(fluid))
         self.postTurbStates = SetOfStates(numTurb, copy.deepcopy(fluid))
+        self.coolingStates = SetOfStates(0)
         self.turbineEfficiencies = [1] * numTurb
         self.compressorEfficiencies = [1] * numComp
         
@@ -647,7 +648,7 @@ class Cycle: # should be valid for both rankine and brayton
         data += self.heatingStates.to_save_str() + "\n"
         data += "<><>\npreTurbStates<>\n"
         data += self.preTurbStates.to_save_str() + "\n"
-        data += "<><>\npostTurbStatess<>\n"
+        data += "<><>\npostTurbStates<>\n"
         data += self.postTurbStates.to_save_str() + "\n"
 
         file = open(path, "w")
@@ -681,6 +682,9 @@ class Cycle: # should be valid for both rankine and brayton
         for i in range(0, len(self.preTurbStates.T)):
             states.extend(self.preTurbStates.get_point(i))
             states.extend(self.postTurbStates.get_point(i))
+            
+        states.extend(self.coolingStates)
+        
         return states # returned object is READ ONLY
 
 
@@ -977,6 +981,16 @@ class Cycle: # should be valid for both rankine and brayton
             air = (self.preTurbStates.h[0] - self.heatingStates.h[0]) * (1 - self.addedFuelMassFrac)
             return fuel + air
 
+    def get_q_in_and_temps(self):
+        out = [[self.preTurbStates.T[0], self.heat_exchanger_heat()]]
+        for i in range(1, len(self.preTurbStates.T)):
+            q = (self.preTurbStates.h[i] - self.postTurbStates.h[i-1]) * self.turbineMassRatios[i]
+            T = self.preTurbStates.T[i]
+            if q != 0:
+                out.append([T, q])
+
+        return sorted(out, reverse=True)
+
     def q_in(self): # assuming heat exchanger source is external, not recycling heat
         return self.heat_exchanger_heat() + self.combustion_heat() + sum(self.reheater_heats())
 
@@ -995,11 +1009,7 @@ class Cycle: # should be valid for both rankine and brayton
         return self.w_out() - self.w_in()
 
     def efficiency(self):
-        #try:
         return self.w_net() / (self.q_in() - self.recycledHeat)
-        #except:
-        #    print(self.preTurbStates.P)
-        #    print(self.postTurbStates.P)
 
     def back_work(self):
         return self.w_in() / self.w_out()
@@ -1040,6 +1050,9 @@ class Cycle: # should be valid for both rankine and brayton
             fwState.fluid[0] = self.postCompStates.fluid[-1]
             fwState.solve_points()
             print("Temperature after feedwater heat exchange:", fwState.T[0], "K")
+        if self.addedFuelMassFrac != 0:
+            print()
+            print("Injected fuel mass fraction:", self.addedFuelMassFrac)
         print()
         print("---------------------------------------------------------------")
         print()
@@ -1174,28 +1187,18 @@ class Cycle: # should be valid for both rankine and brayton
 
 
         
-        # condenser
-        separateChemistryStep = False
-        dontDrawComplexBraytonCooling = True
 
-        
-        if self.postTurbStates.fluid[-1].data != self.preCompStates.fluid[0].data and separateChemistryStep and not dontDrawComplexBraytonCooling:
-            intermediateStep = SetOfStates(1)
-            intermediateStep.P[0] = self.preCompStates.P[0]
-            intermediateStep.T[0] = self.preCompStates.T[0]
-            intermediateStep.fluid[0] = self.postTurbStates.fluid[-1]
-            intermediateStep.solve_points()
-
-            # cooling:
-            self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, intermediateStep, 0, ["T", "P"]))
-            # undoing chemical mixing
-            self.intermediates.extend(get_intermediate_points(intermediateStep, 0, self.preCompStates, 0, ["T", "P"], numPoints=2))
-
-        elif self.postTurbStates.fluid[-1].data == self.preCompStates.fluid[0].data or not dontDrawComplexBraytonCooling: # single step
+        if self.postTurbStates.fluid[-1].data == self.preCompStates.fluid[0].data: # single step return to compressor
             try:
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["s", "P"]))
             except:
                 self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.preCompStates, 0, ["T", "P"]))
+        
+        elif len(self.coolingStates.T) > 0: # brayton cooling processes in heat exchangers
+            try:
+                self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.coolingStates, -1, ["s", "P"]))
+            except:
+                self.intermediates.extend(get_intermediate_points(self.postTurbStates, -1, self.coolingStates, -1, ["T", "P"]))
 
         self.intermediates.make_consistent(True)
 
@@ -1364,6 +1367,55 @@ class CombinedBraytonRankineCycle:
 
     def fuel_efficiency(self):
         return self.w_net() / (self.brayton.addedFuelMassFrac * self.braytonFlowRate)
+
+    def add_brayton_cooling_states(self):
+        transfers = rankine.get_q_in_and_temps()
+        for i in range(0, len(transfers)):
+            transfers[i][1] = transfers[i][1] / (self.braytonFlowRate * self.brayton.turbineMassRatios[-1])
+
+        lastH = self.brayton.postTurbStates.h[-1]
+        self.brayton.coolingStates = SetOfStates(len(transfers), brayton.postTurbStates.fluid[-1])
+        for i in range(0, len(transfers)):
+            lastH -= transfers[i][1]
+            self.brayton.coolingStates.h[i] = lastH
+            self.brayton.coolingStates.P[i] = self.brayton.postTurbStates.P[-1]
+        
+        self.braytyon.coolingStates.solve_points()
+    
+    def adjust_brayton_flow_rate(self, deltaT):
+        transfers = rankine.get_q_in_and_temps()
+        m1 = 0
+        m2 = 1
+        expanded = False
+        while not expanded:
+            m2 = m2 * 1.1
+            self.braytonFlowRate = m2
+            self.add_brayton_cooling_states()
+            expanded = True
+            for i in range(0, len(transfers)):
+                if transfers[i][0] + deltaT > self.brayton.coolingStates.T[i]:
+                    expanded = False
+                    m1 = m2
+
+        while m2 - m1 > 0.0001:
+            m = (m1 + m2) / 2
+            self.braytonFlowRate = m
+            self.add_brayton_cooling_states()
+            consistent = True
+            for i in range(0, len(transfers)):
+                if transfers[i][0] + deltaT > self.brayton.coolingStates.T[i]:
+                    consistent = False
+
+            if consistent:
+                m2 = m
+            else:
+                m1 = m
+
+        return m2
+        
+
+    def copy(self):
+        return copy.deepcopy(self)
     
 
 
@@ -1793,10 +1845,7 @@ def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterAr
     
     with multiprocessing.Pool(processes=2) as pool:
         efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
-
-    #if None in efficiencies:
-        # sometimes crashes when quality is too low, so make the optimizer pick a higher quality
-    #    return 1
+    
     return (efficiencies[1] - efficiencies[0]) / 2
     
 
@@ -1818,8 +1867,6 @@ def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwater
     with multiprocessing.Pool(processes=4) as pool:
         efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
 
-    #print(efficiencies)
-
     if efficiencies[0] == max(efficiencies):
         return turbineExitQualities
     if efficiencies[3] == max(efficiencies):
@@ -1831,7 +1878,6 @@ def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwater
     while X2 - X1 > 0.005:
         X = (X1 + X2) / 2
         grad = rankine_target_quality_efficiency_gradient(parentCycle, X, feedwaterArgs=feedwaterArgs)
-        #print("quality gradient:", X, grad)
         
         if grad > 0:
             X1 = X

@@ -16,13 +16,14 @@ if __name__ == "__main__":
 
     frac = pd.optimize_fuel_mass_frac(brayton, pd.Mixture([["CH4", 1]]), 0.85, 0.005, 0.08, showGraph=True)
     
-    pd.graph_fuel_efficiency_vs_fuel_mass_frac(brayton, pd.Mixture([["CH4", 1]]), 0.85, 0.005, 0.08, 20)
-    pd.graph_efficiency_vs_fuel_mass_frac(brayton, pd.Mixture([["CH4", 1]]), 0.85, 0.005, 0.08, 20)
+    #pd.graph_fuel_efficiency_vs_fuel_mass_frac(brayton, pd.Mixture([["CH4", 1]]), 0.85, 0.005, 0.08, 20)
+    #pd.graph_efficiency_vs_fuel_mass_frac(brayton, pd.Mixture([["CH4", 1]]), 0.85, 0.005, 0.08, 20)
 
     print("Optimal fuel mass fraction:", frac)
     brayton.inject_fuel_after_compressor(pd.Mixture([["CH4", 1]]), frac, 0.85)
     brayton.combust()
 
+    brayton.save("brayton.ppdc")
     brayton.print_design_info()
     brayton.print_all_states()
     brayton.print_energy_calcs()
