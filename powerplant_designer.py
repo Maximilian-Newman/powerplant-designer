@@ -674,12 +674,7 @@ class Cycle: # should be valid for both rankine and brayton
             states.extend(self.postCompStates.get_point(i))
 
         if self.closedFeedwaterHeatTransfer != 0:
-            fwState = SetOfStates(1)
-            fwState.h[0] = self.postCompStates.h[-1] + self.closedFeedwaterHeatTransfer
-            fwState.P[0] = self.postCompStates.P[-1]
-            fwState.fluid[0] = self.postCompStates.fluid[-1]
-            fwState.solve_points()
-            states.extend(fwState)
+            states.extend(self.feedwater_state())
 
         if self.heatingStates.set_is_fully_solved():
             states.extend(self.heatingStates)
@@ -692,6 +687,13 @@ class Cycle: # should be valid for both rankine and brayton
         
         return states # returned object is READ ONLY
 
+    def feedwater_state(self):
+        fwState = SetOfStates(1)
+        fwState.h[0] = self.postCompStates.h[-1] + self.closedFeedwaterHeatTransfer
+        fwState.P[0] = self.postCompStates.P[-1]
+        fwState.fluid[0] = self.postCompStates.fluid[-1]
+        fwState.solve_points()
+        return fwState
 
     def solve_cp(self):
         for subset in self.allStateSets:
@@ -987,12 +989,16 @@ class Cycle: # should be valid for both rankine and brayton
             return fuel + air
 
     def get_q_in_and_temps(self):
-        out = [[self.preTurbStates.T[0], self.heat_exchanger_heat()]]
+        out = [[self.preTurbStates.T[0], self.postCompStates.T[-1], self.heat_exchanger_heat()]]
+        if self.closedFeedwaterHeatTransfer != 0:
+            out = [[self.preTurbStates.T[0], self.feedwater_state().T[-1], self.heat_exchanger_heat()]]
+        
         for i in range(1, len(self.preTurbStates.T)):
             q = (self.preTurbStates.h[i] - self.postTurbStates.h[i-1]) * self.turbineMassRatios[i]
-            T = self.preTurbStates.T[i]
+            T1 = self.postTurbStates.T[i-1]
+            T2 = self.preTurbStates.T[i]
             if q != 0:
-                out.append([T, q])
+                out.append([T2, T1, q])
 
         return sorted(out, reverse=True)
 
@@ -1246,10 +1252,8 @@ class Cycle: # should be valid for both rankine and brayton
     def ts_diagram(self, ax=None, label=None, isRankine=False):
         allPoints = self.combined_states()
         allPoints.make_consistent(True)
-
-        print("test 1:", ax)
         
-        if ax == None:
+        if ax is None:
             ax = plt.figure().add_subplot()
             ax.set_xlabel("Specific Entropy - $J kg^{-1} K^{-1}$")
             ax.set_ylabel("Temperature - $K$")
@@ -1280,12 +1284,16 @@ class Cycle: # should be valid for both rankine and brayton
         if isRankine:
             original_xlim = ax.get_xlim()
             original_ylim = ax.get_ylim()
+            original_xlabel = ax.get_xlabel()
+            original_ylabel = ax.get_ylabel()
             propertyPlot = PropertyPlot(self.postCompStates.fluid[0].to_coolprop(), 'TS', axis=ax, unit_system='SI')
             propertyPlot.calc_isolines(CoolProp.iQ, num=2)
             plt.close(propertyPlot.figure)
             propertyPlot.draw()
             ax.set_xlim(original_xlim)
             ax.set_ylim(original_ylim)
+            ax.set_xlabel(original_xlabel)
+            ax.set_ylabel(original_ylabel)
             ax.autoscale(True)
 
         if self.closedFeedwaterTurbineIndex != None:
@@ -1300,7 +1308,7 @@ class Cycle: # should be valid for both rankine and brayton
         allPoints = self.combined_states()
         allPoints.make_consistent(True)
         
-        if ax == None:
+        if ax is None:
             ax = plt.figure().add_subplot()
             ax.set_xlabel("Specific Volume - $m^3 kg^{-1}$")
             ax.set_ylabel("Pressure - $Pa$")
@@ -1378,12 +1386,12 @@ class CombinedBraytonRankineCycle:
     def add_brayton_cooling_states(self):
         transfers = self.rankine.get_q_in_and_temps()
         for i in range(0, len(transfers)):
-            transfers[i][1] = transfers[i][1] / (self.braytonFlowRate * self.brayton.turbineMassRatios[-1])
+            transfers[i][2] = transfers[i][2] / (self.braytonFlowRate * self.brayton.turbineMassRatios[-1])
 
         lastH = self.brayton.postTurbStates.h[-1]
         self.brayton.coolingStates = SetOfStates(len(transfers), self.brayton.postTurbStates.fluid[-1])
         for i in range(0, len(transfers)):
-            lastH -= transfers[i][1]
+            lastH -= transfers[i][2]
             self.brayton.coolingStates.h[i] = lastH
             self.brayton.coolingStates.P[i] = self.brayton.postTurbStates.P[-1]
         
@@ -1406,21 +1414,34 @@ class CombinedBraytonRankineCycle:
             self.add_brayton_cooling_states()
             expanded = True
             for i in range(0, len(transfers)):
+                startTemp = self.brayton.postTurbStates.T[-1]
+                if i > 0:
+                    startTemp = self.brayton.coolingStates.T[i-1]
+                
                 if self.brayton.coolingStates.T[i] == None:
                     # failed to converge because cryogenic temperature, mass rate is obviously way too low
                     expanded = False
                     m1 = m2
                     m2 = m2 * 1.5
                 
-                elif transfers[i][0] + deltaT > self.brayton.coolingStates.T[i]:
+                elif transfers[i][0] + deltaT > startTemp:
+                    if i == 0:
+                        print("Brayton Turbine exit temperature is lower than rankine boiler temperature")
+                        return False
+                    expanded = False
+                    m1 = m2
+                    m2 = m2 * 1.5
+                
+                elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i]:
                     expanded = False
                     m1 = m2
                     m2 = m2 * 1.5
 
-                if showGraph:
-                    iteration += 1
-                    plt.plot([iteration, iteration], [m1, m2])
-                    plt.show(block=False)
+            if showGraph:
+                iteration += 1
+                plt.plot([iteration, iteration], [m1, m2])
+                plt.show(block=False)
+                plt.pause(0.5)
 
         while m2 - m1 > 0.0001:
             m = (m1 + m2) / 2
@@ -1428,7 +1449,14 @@ class CombinedBraytonRankineCycle:
             self.add_brayton_cooling_states()
             consistent = True
             for i in range(0, len(transfers)):
-                if transfers[i][0] + deltaT > self.brayton.coolingStates.T[i]:
+                startTemp = self.brayton.postTurbStates.T[-1]
+                if i > 0:
+                    startTemp = self.brayton.coolingStates.T[i-1]
+
+                if transfers[i][0] + deltaT > startTemp:
+                    consistent = False
+
+                elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i]:
                     consistent = False
 
             if consistent:
@@ -1440,15 +1468,18 @@ class CombinedBraytonRankineCycle:
                 iteration += 1
                 plt.plot([iteration, iteration], [m1, m2])
                 plt.show(block=False)
+                plt.pause(0.5)
 
         return m2
 
     def ts_diagram(self):
         fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
         fig.suptitle("Combined Cycle Ts Diagram")
-        print(ax1, ax2)
         ax1.set_title("Brayton")
         ax2.set_title("Rankine")
+        ax1.set_ylabel("Temperature - $K$")
+        ax1.set_xlabel("Specific Entropy - $J kg^{-1} K^{-1}$")
+        ax2.set_xlabel("Specific Entropy - $J kg^{-1} K^{-1}$")
         self.brayton.ts_diagram(ax=ax1)
         self.rankine.ts_diagram(ax=ax2, isRankine=True)
         
