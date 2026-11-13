@@ -249,7 +249,7 @@ class SetOfStates():
         point.fluid[0] = copy.deepcopy(self.fluid[i])
         return point
 
-    def solve_points(self):
+    def solve_points(self, usePengRobinson=False):
         self.make_consistent(False)
         
         for i in range(0, len(self.T)):
@@ -267,20 +267,25 @@ class SetOfStates():
             if self.X[i] != None:
                 knowns.append(["Q", self.X[i]])
 
+            fluid = self.fluid[i].to_coolprop()
+            if usePengRobinson:
+                fluid = fluid.replace("HEOS::", "PR::")
+
             while len(knowns) >= 2:
                 try:
+                #if True:
                     if self.T[i] == None:
-                        self.T[i] = cp.PropsSI("T", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                        self.T[i] = cp.PropsSI("T", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], fluid)
                     if self.P[i] == None:
-                        self.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                        self.P[i] = cp.PropsSI("P", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], fluid)
                     if self.v[i] == None:
-                        self.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                        self.v[i] = 1 / cp.PropsSI("D", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], fluid)
                     if self.h[i] == None:
-                        self.h[i] = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                        self.h[i] = cp.PropsSI("Hmass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], fluid)
                     if self.s[i] == None:
-                        self.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                        self.s[i] = cp.PropsSI("Smass", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], fluid)
                     if self.X[i] == None:
-                        self.X[i] = cp.PropsSI("Q", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], self.fluid[i].to_coolprop())
+                        self.X[i] = cp.PropsSI("Q", knowns[0][0], knowns[0][1], knowns[1][0], knowns[1][1], fluid)
                     knowns = []
                 except:
                     knowns.pop(0)
@@ -1241,6 +1246,8 @@ class Cycle: # should be valid for both rankine and brayton
     def ts_diagram(self, ax=None, label=None, isRankine=False):
         allPoints = self.combined_states()
         allPoints.make_consistent(True)
+
+        print("test 1:", ax)
         
         if ax == None:
             ax = plt.figure().add_subplot()
@@ -1369,33 +1376,51 @@ class CombinedBraytonRankineCycle:
         return self.w_net() / (self.brayton.addedFuelMassFrac * self.braytonFlowRate)
 
     def add_brayton_cooling_states(self):
-        transfers = rankine.get_q_in_and_temps()
+        transfers = self.rankine.get_q_in_and_temps()
         for i in range(0, len(transfers)):
             transfers[i][1] = transfers[i][1] / (self.braytonFlowRate * self.brayton.turbineMassRatios[-1])
 
         lastH = self.brayton.postTurbStates.h[-1]
-        self.brayton.coolingStates = SetOfStates(len(transfers), brayton.postTurbStates.fluid[-1])
+        self.brayton.coolingStates = SetOfStates(len(transfers), self.brayton.postTurbStates.fluid[-1])
         for i in range(0, len(transfers)):
             lastH -= transfers[i][1]
             self.brayton.coolingStates.h[i] = lastH
             self.brayton.coolingStates.P[i] = self.brayton.postTurbStates.P[-1]
         
-        self.braytyon.coolingStates.solve_points()
+        self.brayton.coolingStates.solve_points()
     
-    def adjust_brayton_flow_rate(self, deltaT):
-        transfers = rankine.get_q_in_and_temps()
+    def adjust_brayton_flow_rate(self, deltaT, showGraph=False):
+        if showGraph:
+            plt.figure()
+            plt.xlabel("iteration")
+            plt.ylabel("Brayton Relative Mass Flow Rate")
+            plt.title("Brayton Flow Rate Convergence for Combined Brayton-Rankine System")
+        
+        transfers = self.rankine.get_q_in_and_temps()
         m1 = 0
         m2 = 1
+        iteration = 0
         expanded = False
         while not expanded:
-            m2 = m2 * 1.1
             self.braytonFlowRate = m2
             self.add_brayton_cooling_states()
             expanded = True
             for i in range(0, len(transfers)):
-                if transfers[i][0] + deltaT > self.brayton.coolingStates.T[i]:
+                if self.brayton.coolingStates.T[i] == None:
+                    # failed to converge because cryogenic temperature, mass rate is obviously way too low
                     expanded = False
                     m1 = m2
+                    m2 = m2 * 1.5
+                
+                elif transfers[i][0] + deltaT > self.brayton.coolingStates.T[i]:
+                    expanded = False
+                    m1 = m2
+                    m2 = m2 * 1.5
+
+                if showGraph:
+                    iteration += 1
+                    plt.plot([iteration, iteration], [m1, m2])
+                    plt.show(block=False)
 
         while m2 - m1 > 0.0001:
             m = (m1 + m2) / 2
@@ -1410,8 +1435,25 @@ class CombinedBraytonRankineCycle:
                 m2 = m
             else:
                 m1 = m
+            
+            if showGraph:
+                iteration += 1
+                plt.plot([iteration, iteration], [m1, m2])
+                plt.show(block=False)
 
         return m2
+
+    def ts_diagram(self):
+        fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
+        fig.suptitle("Combined Cycle Ts Diagram")
+        print(ax1, ax2)
+        ax1.set_title("Brayton")
+        ax2.set_title("Rankine")
+        self.brayton.ts_diagram(ax=ax1)
+        self.rankine.ts_diagram(ax=ax2, isRankine=True)
+        
+    def print_energy_calcs(self):
+        pass
         
 
     def copy(self):
