@@ -524,8 +524,8 @@ def solve_point_inefficient(toSet, i, fromSet, fromIndex, enthalpyMultiplier):
 
 
 def load_cycle(path):
-    if not path.lower().endswith(".pdc"):
-        path += ".pdc" # .pdc = 'Powerplant Designer Cycle'
+    if not path.lower().endswith(".ppdc"):
+        path += ".ppdc" # .ppdc = 'PowerPlant Designer Cycle'
 
     file = open(path, "r")
     data = file.read().split("\n<><>\n")
@@ -614,8 +614,8 @@ class Cycle: # should be valid for both rankine and brayton
         return copy.deepcopy(self)
 
     def save(self, path):
-        if not path.lower().endswith(".pdc"):
-            path += ".pdc" # .pdc = 'Powerplant Designer Cycle'
+        if not path.lower().endswith(".ppdc"):
+            path += ".ppdc" # .ppdc = 'Powerplant Designer Cycle'
         data = ""
 
         data += "externalFuelCompressionWork=" + str(self.externalFuelCompressionWork) + "\n"
@@ -1397,9 +1397,47 @@ def graph_fuel_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEff
     
     plt.figure()
     plt.xlabel("Fuel Mass fraction")
-    plt.ylabel("Fuel Efficiency ($w_{out} / \\dot{m}_{fuel}$)")
+    plt.ylabel("Fuel Efficiency ($\\dot{w}_{out} / \\dot{m}_{fuel}$)")
     plt.scatter(fracs, efficiencies)
     plt.show(block=False)
+
+
+def fuel_mass_fuel_efficiency_gradient(parentCycle, fuel, fuelCompressorEfficiency, frac):
+    interval = 0.00001
+    cycle1 = copy.deepcopy(parentCycle)
+    cycle2 = copy.deepcopy(parentCycle)
+    cycle1.inject_fuel_after_compressor(Mixture([["CH4", 1]]), frac - interval / 2, fuelCompressorEfficiency)
+    cycle2.inject_fuel_after_compressor(Mixture([["CH4", 1]]), frac + interval / 2, fuelCompressorEfficiency)
+    cycle1.combust()
+    cycle2.combust()
+    return (cycle2.fuel_efficiency() - cycle1.fuel_efficiency()) / interval
+
+def optimize_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, frac1, frac2, showGraph=False):
+    if showGraph:
+        plt.figure()
+        plt.xlabel("iteration")
+        plt.ylabel("Injected Fuel Mass Fraction")
+        plt.title("Fuel Mass Fraction Convergence")
+    
+    tolerance = 0.0001
+    i = 0
+    while frac2 - frac1 > tolerance:
+        frac = (frac1 + frac2) / 2
+        grad = fuel_mass_fuel_efficiency_gradient(parentCycle, fuel, fuelCompressorEfficiency, frac)
+        if grad > 0:
+            frac1 = frac
+        elif grad < 0:
+            frac2 = frac
+        else:
+            return frac
+        
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [frac1, frac2])
+            plt.show(block=False)
+
+    return (frac1 + frac2) / 2
+    
 
 def graph_efficiency_vs_feedwater_pressure(parentCycle, tempDiff, turbineIndex, numPoints, removeReheater=True):
     maxP = parentCycle.preTurbStates.P[0] - 10
@@ -1803,6 +1841,7 @@ def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwater
             return X
 
     return (X1 + X2) / 2
+
 
 
 def init():
