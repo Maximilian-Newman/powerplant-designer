@@ -8,6 +8,8 @@ import copy
 import numpy as np
 import multiprocessing
 
+STATE_POINT_SIZE = 80
+
 def parse(text):
     if text == "None":
         return None
@@ -585,6 +587,8 @@ def load_cycle(path):
             cycle.preTurbStates.from_save_str(data)
         if name == "postTurbStates":
             cycle.postTurbStates.from_save_str(data)
+        if name == "coolingStates":
+            cycle.coolingStates.from_save_str(data)
 
 
 
@@ -655,6 +659,10 @@ class Cycle: # should be valid for both rankine and brayton
         data += self.preTurbStates.to_save_str() + "\n"
         data += "<><>\npostTurbStates<>\n"
         data += self.postTurbStates.to_save_str() + "\n"
+
+        if len(self.coolingStates.T) > 0:
+            data += "<><>\ncoolingStates<>\n"
+            data += self.coolingStates.to_save_str() + "\n"
 
         file = open(path, "w")
         file.write(data[:-1])
@@ -988,10 +996,10 @@ class Cycle: # should be valid for both rankine and brayton
             air = (self.preTurbStates.h[0] - self.heatingStates.h[0]) * (1 - self.addedFuelMassFrac)
             return fuel + air
 
-    def get_q_in_and_temps(self):
-        out = [[self.preTurbStates.T[0], self.postCompStates.T[-1], self.heat_exchanger_heat()]]
+    def get_q_in_and_temps(self): # for combined cycle calculations
+        out = [[self.preTurbStates.T[0], self.postCompStates.T[-1], self.heat_exchanger_heat() - self.recycledHeat]]
         if self.closedFeedwaterHeatTransfer != 0:
-            out = [[self.preTurbStates.T[0], self.feedwater_state().T[-1], self.heat_exchanger_heat()]]
+            out = [[self.preTurbStates.T[0], self.feedwater_state().T[-1], self.heat_exchanger_heat() - self.recycledHeat]]
         
         for i in range(1, len(self.preTurbStates.T)):
             q = (self.preTurbStates.h[i] - self.postTurbStates.h[i-1]) * self.turbineMassRatios[i]
@@ -1242,7 +1250,7 @@ class Cycle: # should be valid for both rankine and brayton
         intermediates.extend(get_intermediate_points(feedwaterStates, 0, feedwaterStates, 1, ["P", "s"]))
         intermediates.extend(get_intermediate_points(feedwaterStates, 1, feedwaterStates, 2, ["h", "P"], numPoints=5))
 
-        ax.scatter(feedwaterStates.s, feedwaterStates.T, marker="o", s=50)
+        ax.scatter(feedwaterStates.s, feedwaterStates.T, marker="o", s=STATE_POINT_SIZE)
         ax.plot(intermediates.s, intermediates.T, marker=".")
         for i in range(1, len(feedwaterStates.s)):
             ax.text(feedwaterStates.s[i], feedwaterStates.T[i], str(i-1 + len(self.combined_states().T)), fontsize=20)
@@ -1266,7 +1274,7 @@ class Cycle: # should be valid for both rankine and brayton
             y.append(allPoints.T[i])
             stateLabels.append(str(i))
 
-        ax.scatter(x, y, label=label, marker="o", s=50)
+        ax.scatter(x, y, label=label, marker="o", s=STATE_POINT_SIZE)
 
         for i in range(0, len(x)):
             ax.text(x[i], y[i], stateLabels[i], fontsize=20)
@@ -1321,7 +1329,7 @@ class Cycle: # should be valid for both rankine and brayton
             y.append(allPoints.P[i])
             stateLabels.append(str(i))
 
-        ax.scatter(x, y, label=label, marker="o", s=50)
+        ax.scatter(x, y, label=label, marker="o", s=STATE_POINT_SIZE)
 
         for i in range(0, len(x)):
             ax.text(x[i], y[i], stateLabels[i], fontsize=20)
@@ -1360,13 +1368,19 @@ class CombinedBraytonRankineCycle:
         self.brayton = brayton
         self.rankine = rankine
         self.braytonFlowRate = 1 # brayton flow rate / rankine flow rate
-        self.transferedHeat = 0  # heat transefer from brayton to rankine
+        self.transferredHeat = 0  # heat transefer from brayton to rankine
 
     def q_in(self): # assuming no heat recycling within each cycle
-        return self.brayton.q_in() * self.braytonFlowRate + self.rankine.q_in() - self.transferedHeat
+        return self.brayton.q_in() * self.braytonFlowRate + self.rankine.q_in() - self.transferredHeat
 
     def q_out(self): # assuming no heat recycling within each cycle
-        return self.brayton.q_out() * self.braytonFlowRate + self.rankine.q_out() - self.transferedHeat
+        return self.brayton.q_out() * self.braytonFlowRate + self.rankine.q_out() - self.transferredHeat
+
+    def external_q_in(self):
+        return self.q_in() - self.brayton.recycledHeat * self.braytonFlowRate - self.rankine.recycledHeat
+    
+    def external_q_out(self):
+        return self.q_out() - self.brayton.recycledHeat * self.braytonFlowRate - self.rankine.recycledHeat
 
     def w_in(self):
         return self.brayton.w_in() * self.braytonFlowRate + self.rankine.w_in()
@@ -1377,11 +1391,24 @@ class CombinedBraytonRankineCycle:
     def w_net(self):
         return self.w_out() - self.w_in()
 
+    def back_work(self):
+        return self.w_in() / self.w_out()
+
     def efficiency(self):
         return self.w_net() / (self.q_in() - self.brayton.recycledHeat * self.braytonFlowRate - self.rankine.recycledHeat)
 
     def fuel_efficiency(self):
         return self.w_net() / (self.brayton.addedFuelMassFrac * self.braytonFlowRate)
+
+    def efficiency_2nd_law(self):
+        hotTemps = self.brayton.preTurbStates.T.copy()
+        hotTemps.extend(self.rankine.preTurbStates.T.copy())
+        T_H = max(hotTemps)
+        coldTemps = self.brayton.preCompStates.T.copy()
+        coldTemps.extend(self.rankine.preCompStates.T.copy())
+        T_C = min(coldTemps)
+        carnot = 1 - T_C / T_H
+        return self.efficiency() / carnot
 
     def add_brayton_cooling_states(self):
         transfers = self.rankine.get_q_in_and_temps()
@@ -1441,7 +1468,7 @@ class CombinedBraytonRankineCycle:
                 iteration += 1
                 plt.plot([iteration, iteration], [m1, m2])
                 plt.show(block=False)
-                plt.pause(0.5)
+                #plt.pause(0.5)
 
         while m2 - m1 > 0.0001:
             m = (m1 + m2) / 2
@@ -1468,8 +1495,11 @@ class CombinedBraytonRankineCycle:
                 iteration += 1
                 plt.plot([iteration, iteration], [m1, m2])
                 plt.show(block=False)
-                plt.pause(0.5)
+                #plt.pause(0.5)
 
+        self.transferredHeat = 0
+        for part in transfers:
+            self.transferredHeat += part[2]
         return m2
 
     def ts_diagram(self):
@@ -1484,7 +1514,61 @@ class CombinedBraytonRankineCycle:
         self.rankine.ts_diagram(ax=ax2, isRankine=True)
         
     def print_energy_calcs(self):
-        pass
+        print()
+        print("---------------------------------------------------------------")
+        print()
+        print("Energy Calculations:")
+        print("All units in J/kg noramalized using the mass of the rankine cycle")
+        print()
+        print()
+        print("Brayton relative mass flow rate:", self.braytonFlowRate)
+        print()
+        print()
+        print("Brayton q_in:", self.brayton.q_in() * self.braytonFlowRate)
+        print("Brayton recycled heat:", self.brayton.recycledHeat * self.braytonFlowRate)
+        print("Brayton external q_in:", (self.brayton.q_in() - self.brayton.recycledHeat) * self.braytonFlowRate)
+        print()
+        print("Rankine q_in:", self.rankine.q_in())
+        print("Rankine recycled heat:", self.rankine.recycledHeat)
+        print("Heat transeferred from brayton:", self.transferredHeat)
+        print("Rankine external q_in:", self.rankine.q_in() - self.rankine.recycledHeat - self.transferredHeat)
+        print()
+        print("Total external q_in:", self.external_q_in())
+        print()
+        print()
+        print("Brayton q_out:", self.brayton.q_out() * self.braytonFlowRate)
+        print("Brayton recycled heat:", self.brayton.recycledHeat * self.braytonFlowRate)
+        print("Heat transferred to rankine:", self.transferredHeat)
+        print("Brayton external q_out:", (self.brayton.q_out() - self.brayton.recycledHeat) * self.braytonFlowRate - self.transferredHeat)
+        print()
+        print("Rankine q_out:", self.rankine.q_out())
+        print("Rankine recycled heat:", self.rankine.recycledHeat)
+        print("Rankine external q_out:", self.rankine.q_out() - self.rankine.recycledHeat)
+        print()
+        print("Total external q_out:", self.external_q_out())
+        print()
+        print()
+        print("Brayton w_in:", self.brayton.w_in() * self.braytonFlowRate)
+        print("Rankine w_in:", self.rankine.w_in())
+        print("Total w_in;", self.w_in())
+        print()
+        print("Brayton w_out", self.brayton.w_out() * self.braytonFlowRate)
+        print("Rankine w_out", self.rankine.w_out())
+        print("Total w_out", self.w_out())
+        print()
+        print()
+        print("Combined system properties:")
+        print()
+        print("Net Work:", self.w_net())
+        print("Back-Work Ratio:", self.back_work())
+        print("Efficiency:", self.efficiency())
+        print("2nd Law Efficiency:", self.efficiency_2nd_law())
+        print("Fuel Efficiency:", self.fuel_efficiency())
+        print()
+        print("---------------------------------------------------------------")
+        print()
+        
+        
         
 
     def copy(self):
