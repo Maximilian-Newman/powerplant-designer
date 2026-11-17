@@ -1507,11 +1507,12 @@ class CombinedBraytonRankineCycle:
                 if i > 0:
                     startTemp = self.brayton.coolingStates.T[i-1]
                 
-                if self.brayton.coolingStates.T[i] == None:
+                if self.brayton.coolingStates.T[i] == None or self.brayton.coolingStates.h[-1] <=0:
                     # failed to converge because cryogenic temperature, mass rate is obviously way too low
                     expanded = False
                     m1 = m2
                     m2 = m2 * 1.5
+                    break
                 
                 elif transfers[i][0] + deltaT > startTemp:
                     if i == 0:
@@ -1520,17 +1521,42 @@ class CombinedBraytonRankineCycle:
                     expanded = False
                     m1 = m2
                     m2 = m2 * 1.5
+                    break
                 
                 elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i]:
                     expanded = False
                     m1 = m2
                     m2 = m2 * 1.5
+                    break
+
+            if expanded: # ends are good, check intermediate states
+                numPoints = 6
+                braytonSideMain = self.brayton.postTurbStates.get_point(-1)
+                braytonSideMain.extend(self.brayton.coolingStates)
+                for i in range(0, len(transfers)):
+                    if not expanded:
+                        break
+                    stateSet = SetOfStates(2, self.rankine.postCompStates.fluid[-1].copy())
+                    stateSet.T[0] = transfers[i][0]
+                    stateSet.T[1] = transfers[i][1]
+                    stateSet.s[0] = transfers[i][3]
+                    stateSet.s[1] = transfers[i][4]
+                    stateSet.solve_points()
+                    rankineIntermediates = get_intermediate_points(stateSet, 0, stateSet, 1, ["P", "h"], numPoints=numPoints)
+                    braytonIntermediates = get_intermediate_points(braytonSideMain, i, braytonSideMain, i+1, ["P", "h"], numPoints=numPoints)
+
+                    for j in range(0, numPoints):
+                        if rankineIntermediates.T[j] + deltaT > braytonIntermediates.T[j]:
+                            print(j, rankineIntermediates.T[j] + deltaT, braytonIntermediates.T[j])
+                            expanded = False
+                            m1 = m2
+                            m2 = m2 * 1.5
 
             if showGraph:
                 iteration += 1
                 plt.plot([iteration, iteration], [m1, m2])
                 plt.show(block=False)
-                #plt.pause(0.5)
+                plt.pause(0.5)
 
         while m2 - m1 > 0.0001:
             m = (m1 + m2) / 2
@@ -1542,11 +1568,34 @@ class CombinedBraytonRankineCycle:
                 if i > 0:
                     startTemp = self.brayton.coolingStates.T[i-1]
 
-                if transfers[i][0] + deltaT > startTemp:
+                if transfers[i][0] + deltaT > startTemp or self.brayton.coolingStates.h[i] <=0:
                     consistent = False
 
                 elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i]:
                     consistent = False
+
+
+            if consistent: # ends are good, check intermediate states
+                numPoints = 6
+                braytonSideMain = self.brayton.postTurbStates.get_point(-1)
+                braytonSideMain.extend(self.brayton.coolingStates)
+                for i in range(0, len(transfers)):
+                    if not consistent:
+                        break
+                    stateSet = SetOfStates(2, self.rankine.postCompStates.fluid[-1].copy())
+                    stateSet.T[0] = transfers[i][0]
+                    stateSet.T[1] = transfers[i][1]
+                    stateSet.s[0] = transfers[i][3]
+                    stateSet.s[1] = transfers[i][4]
+                    stateSet.solve_points()
+                    rankineIntermediates = get_intermediate_points(stateSet, 0, stateSet, 1, ["P", "h"], numPoints=numPoints)
+                    braytonIntermediates = get_intermediate_points(braytonSideMain, i, braytonSideMain, i+1, ["P", "h"], numPoints=numPoints)
+
+                    for j in range(0, numPoints):
+                        if rankineIntermediates.T[j] + deltaT > braytonIntermediates.T[j]:
+                            print(j, rankineIntermediates.T[j] + deltaT, braytonIntermediates.T[j])
+                            consistent = False
+                
 
             if consistent:
                 m2 = m
@@ -1557,6 +1606,7 @@ class CombinedBraytonRankineCycle:
                 iteration += 1
                 plt.plot([iteration, iteration], [m1, m2])
                 plt.show(block=False)
+                plt.pause(0.5)
 
         self.transferredHeat = 0
         for part in transfers:
