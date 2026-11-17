@@ -716,6 +716,18 @@ class Cycle: # should be valid for both rankine and brayton
         
         return states # returned object is READ ONLY
 
+    def get_state_label(self, state):
+        combined = self.combined_states()
+
+        # don't use h for comparison because h is shifted in heat exchanger plot
+
+        for tolerance in [0, 0.000001, 0.00001, 0.0001, 0.001, 0.01]:
+            for i in range(0, len(combined.T)):
+                if abs(combined.T[i] - state.T[0]) <= tolerance and abs(combined.P[i] - state.P[0]) <= tolerance and abs(combined.v[i] - state.v[0]) <= tolerance and abs(combined.s[i] - state.s[0]) <= tolerance and abs(combined.X[i] - state.X[0]) <= tolerance:
+                    return str(i)
+
+        return ""
+
     def feedwater_state(self):
         fwState = SetOfStates(1)
         fwState.h[0] = self.postCompStates.h[-1] + self.closedFeedwaterHeatTransfer
@@ -1583,7 +1595,7 @@ class CombinedBraytonRankineCycle:
         plt.figure()
         plt.title("Heat Exchanger from Brayton to Rankine")
         plt.xlabel("Heat Exhanged - $J kg^{-1}_{rankine}$")
-        plt.ylabel("Temperature")
+        plt.ylabel("Temperature - $K$")
 
         braytonSideMain = self.brayton.postTurbStates.get_point(-1)
         braytonSideMain.extend(self.brayton.coolingStates)
@@ -1601,6 +1613,9 @@ class CombinedBraytonRankineCycle:
         plt.scatter(braytonSideMain.h, braytonSideMain.T, marker="o", s=STATE_POINT_SIZE)
         plt.plot(braytonSideInter.h, braytonSideInter.T, marker=".", label="Brayton Side")
 
+        for i in range(0, len(braytonSideMain.T)):
+            plt.text(braytonSideMain.h[i], braytonSideMain.T[i], self.brayton.get_state_label(braytonSideMain.get_point(i)), fontsize=20)
+
         transfers = self.rankine.get_q_in_and_temps() # [T2, T1, q, s2, s1] # T1 = cold for brayton
         rankineSideMain = SetOfStates(0)
         rankineSideInter = SetOfStates(0)
@@ -1615,7 +1630,6 @@ class CombinedBraytonRankineCycle:
             
             inter = get_intermediate_points(stateSet, 0, stateSet, 1, ["P", "h"])
 
-            #hOffset = stateSet.h[0] + alreadyTransferred
             hOffset = -stateSet.h[0] + self.transferredHeat - alreadyTransferred
             for i in range(0, len(stateSet.T)):
                 stateSet.h[i] += hOffset
@@ -1629,6 +1643,9 @@ class CombinedBraytonRankineCycle:
         plt.scatter(rankineSideMain.h, rankineSideMain.T, marker="o", s=STATE_POINT_SIZE)
         plt.plot(rankineSideInter.h, rankineSideInter.T, marker=".", label="Rankine Side")
 
+        for i in range(0, len(rankineSideMain.T)):
+            plt.text(rankineSideMain.h[i], rankineSideMain.T[i], self.rankine.get_state_label(rankineSideMain.get_point(i)), fontsize=20)
+        
         plt.legend()
         plt.show(block=False)
         
