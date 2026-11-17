@@ -3,6 +3,7 @@ from CoolProp import CoolProp as cp # haha very funny
 from CoolProp.Plots import PropertyPlot
 import CoolProp
 import matplotlib.pyplot as plt
+from matplotlib.patches import ConnectionPatch
 import math
 import copy
 import numpy as np
@@ -181,9 +182,26 @@ class Mixture:
                 line[2] = float(line[2])
             self.data.append(line)
 
+    def copy(self):
+        return copy.deepcopy(self)
+
+
 def AIR():
     return Mixture([["N2", 0.78084], ["O2", 0.20946], ["Ar", 0.00934], ["CO2", 0.000412], ["Ne", 0.00001818]])
     # from https://www.engineeringtoolbox.com/air-composition-d_212.html
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 class SetOfStates():
     def __init__(self, numStates, fluid = None):
@@ -381,6 +399,9 @@ class SetOfStates():
 
             else:
                 print("ERROR: unknown property '", prop, "' from save file")
+
+    def copy(self):
+        return copy.deepcopy(self)
         
 
 
@@ -997,16 +1018,18 @@ class Cycle: # should be valid for both rankine and brayton
             return fuel + air
 
     def get_q_in_and_temps(self): # for combined cycle calculations
-        out = [[self.preTurbStates.T[0], self.postCompStates.T[-1], self.heat_exchanger_heat() - self.recycledHeat]]
+        out = [[self.preTurbStates.T[0], self.postCompStates.T[-1], self.heat_exchanger_heat() - self.recycledHeat, self.preTurbStates.s[0], self.postCompStates.s[-1]]]
         if self.closedFeedwaterHeatTransfer != 0:
-            out = [[self.preTurbStates.T[0], self.feedwater_state().T[-1], self.heat_exchanger_heat() - self.recycledHeat]]
+            out = [[self.preTurbStates.T[0], self.feedwater_state().T[-1], self.heat_exchanger_heat() - self.recycledHeat, self.preTurbStates.s[0], self.feedwater_state().s[-1]]]
         
         for i in range(1, len(self.preTurbStates.T)):
             q = (self.preTurbStates.h[i] - self.postTurbStates.h[i-1]) * self.turbineMassRatios[i]
             T1 = self.postTurbStates.T[i-1]
             T2 = self.preTurbStates.T[i]
+            s1 = self.postTurbStates.s[i-1]
+            s2 = self.preTurbStates.s[i]
             if q != 0:
-                out.append([T2, T1, q])
+                out.append([T2, T1, q, s2, s1])
 
         return sorted(out, reverse=True)
 
@@ -1363,6 +1386,28 @@ class Cycle: # should be valid for both rankine and brayton
             self.preCompStates.fluid[0].pie_chart(title, ax=axs[0])
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class CombinedBraytonRankineCycle:
     def __init__(self, brayton, rankine):
         self.brayton = brayton
@@ -1412,6 +1457,11 @@ class CombinedBraytonRankineCycle:
 
     def add_brayton_cooling_states(self):
         transfers = self.rankine.get_q_in_and_temps()
+        
+        self.transferredHeat = 0
+        for part in transfers:
+            self.transferredHeat += part[2]
+        
         for i in range(0, len(transfers)):
             transfers[i][2] = transfers[i][2] / (self.braytonFlowRate * self.brayton.turbineMassRatios[-1])
 
@@ -1495,12 +1545,11 @@ class CombinedBraytonRankineCycle:
                 iteration += 1
                 plt.plot([iteration, iteration], [m1, m2])
                 plt.show(block=False)
-                #plt.pause(0.5)
 
         self.transferredHeat = 0
         for part in transfers:
             self.transferredHeat += part[2]
-        return m2
+        self.braytonFlowRate = m2
 
     def ts_diagram(self):
         fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
@@ -1512,6 +1561,77 @@ class CombinedBraytonRankineCycle:
         ax2.set_xlabel("Specific Entropy - $J kg^{-1} K^{-1}$")
         self.brayton.ts_diagram(ax=ax1)
         self.rankine.ts_diagram(ax=ax2, isRankine=True)
+
+        transfers = self.rankine.get_q_in_and_temps()
+        for i in range(0, len(transfers)):
+            T = transfers[i][0]
+            if i == 0:
+                xyA = (self.brayton.postTurbStates.s[-1], T)
+            else:
+                xyA = (self.brayton.coolingStates.s[i-1], T)
+            xyB = (transfers[i][3], T)
+            con1 = ConnectionPatch(xyA, xyB, "data", "data", axesA=ax1, axesB=ax2, linestyle="dashdot")
+            fig.add_artist(con1)
+            T = transfers[i][1]
+            xyA = (self.brayton.coolingStates.s[i], T)
+            xyB = (transfers[i][4], T)
+            con2 = ConnectionPatch(xyA, xyB, "data", "data", axesA=ax1, axesB=ax2, linestyle="dashdot")
+            fig.add_artist(con2)
+        plt.show(block=False)
+
+    def transfer_th_diagram(self):
+        plt.figure()
+        plt.title("Heat Exchanger from Brayton to Rankine")
+        plt.xlabel("Heat Exhanged - $J kg^{-1}_{rankine}$")
+        plt.ylabel("Temperature")
+
+        braytonSideMain = self.brayton.postTurbStates.get_point(-1)
+        braytonSideMain.extend(self.brayton.coolingStates)
+        h0 = braytonSideMain.h[-1]
+
+        braytonSideInter = get_intermediate_points(braytonSideMain, 0, braytonSideMain, -1, ["P", "h"], numPoints=6)
+
+        for i in range(0, len(braytonSideInter.h)):
+            braytonSideInter.h[i] -= h0
+            braytonSideInter.h[i] = braytonSideInter.h[i] * self.braytonFlowRate
+        for i in range(0, len(braytonSideMain.h)):
+            braytonSideMain.h[i] -= h0
+            braytonSideMain.h[i] = braytonSideMain.h[i] * self.braytonFlowRate
+
+        plt.scatter(braytonSideMain.h, braytonSideMain.T, marker="o", s=STATE_POINT_SIZE)
+        plt.plot(braytonSideInter.h, braytonSideInter.T, marker=".", label="Brayton Side")
+
+        transfers = self.rankine.get_q_in_and_temps() # [T2, T1, q, s2, s1] # T1 = cold for brayton
+        rankineSideMain = SetOfStates(0)
+        rankineSideInter = SetOfStates(0)
+        alreadyTransferred = 0
+        for tran in transfers:
+            stateSet = SetOfStates(2, self.rankine.postCompStates.fluid[-1].copy())
+            stateSet.T[0] = tran[0]
+            stateSet.T[1] = tran[1]
+            stateSet.s[0] = tran[3]
+            stateSet.s[1] = tran[4]
+            stateSet.solve_points()
+            
+            inter = get_intermediate_points(stateSet, 0, stateSet, 1, ["P", "h"])
+
+            #hOffset = stateSet.h[0] + alreadyTransferred
+            hOffset = -stateSet.h[0] + self.transferredHeat - alreadyTransferred
+            for i in range(0, len(stateSet.T)):
+                stateSet.h[i] += hOffset
+            for i in range(0, len(inter.T)):
+                inter.h[i] += hOffset
+
+            rankineSideInter.extend(inter)
+            rankineSideMain.extend(stateSet)
+            alreadyTransferred += tran[2]
+
+        plt.scatter(rankineSideMain.h, rankineSideMain.T, marker="o", s=STATE_POINT_SIZE)
+        plt.plot(rankineSideInter.h, rankineSideInter.T, marker=".", label="Rankine Side")
+
+        plt.legend()
+        plt.show(block=False)
+        
         
     def print_energy_calcs(self):
         print()
@@ -1574,6 +1694,29 @@ class CombinedBraytonRankineCycle:
     def copy(self):
         return copy.deepcopy(self)
     
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def graph_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, minFrac, maxFrac, numPoints):
