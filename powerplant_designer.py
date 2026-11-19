@@ -721,11 +721,13 @@ class Cycle: # should be valid for both rankine and brayton
 
         # don't use h for comparison because h is shifted in heat exchanger plot
 
-        for tolerance in [0, 0.000001, 0.00001, 0.0001, 0.001, 0.01]:
+        for tolerance in [0, 0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1]:
             for i in range(0, len(combined.T)):
-                if abs(combined.T[i] - state.T[0]) <= tolerance and abs(combined.P[i] - state.P[0]) <= tolerance and abs(combined.v[i] - state.v[0]) <= tolerance and abs(combined.s[i] - state.s[0]) <= tolerance and abs(combined.X[i] - state.X[0]) <= tolerance:
+                if abs(combined.T[i] - state.T[0]) <= tolerance and abs(combined.P[i] - state.P[0]) <= tolerance and abs(combined.v[i] - state.v[0]) <= tolerance and abs(combined.s[i] - state.s[0]) <= tolerance:
                     return str(i)
 
+        print("not found")
+        print(state.T, state.P, state.v, state.s)
         return ""
 
     def feedwater_state(self):
@@ -1477,12 +1479,14 @@ class CombinedBraytonRankineCycle:
         for i in range(0, len(transfers)):
             transfers[i][2] = transfers[i][2] / (self.braytonFlowRate * self.brayton.turbineMassRatios[-1])
 
-        lastH = self.brayton.postTurbStates.h[-1]
-        self.brayton.coolingStates = SetOfStates(len(transfers), self.brayton.postTurbStates.fluid[-1])
+        self.brayton.coolingStates = SetOfStates(len(transfers) + 1, self.brayton.postTurbStates.fluid[-1])
+        lastH = self.brayton.postTurbStates.h[-1] - self.brayton.recycledHeat
+        self.brayton.coolingStates.h[0] = lastH
+        self.brayton.coolingStates.P[0] = self.brayton.postTurbStates.P[-1]
         for i in range(0, len(transfers)):
             lastH -= transfers[i][2]
-            self.brayton.coolingStates.h[i] = lastH
-            self.brayton.coolingStates.P[i] = self.brayton.postTurbStates.P[-1]
+            self.brayton.coolingStates.h[i+1] = lastH
+            self.brayton.coolingStates.P[i+1] = self.brayton.postTurbStates.P[-1]
         
         self.brayton.coolingStates.solve_points()
     
@@ -1503,11 +1507,12 @@ class CombinedBraytonRankineCycle:
             self.add_brayton_cooling_states()
             expanded = True
             for i in range(0, len(transfers)):
-                startTemp = self.brayton.postTurbStates.T[-1]
-                if i > 0:
-                    startTemp = self.brayton.coolingStates.T[i-1]
+                #startTemp = self.brayton.postTurbStates.T[-1]
+                #if i > 0:
+                #    startTemp = self.brayton.coolingStates.T[i-1]
+                startTemp = self.brayton.coolingStates.T[i]
                 
-                if self.brayton.coolingStates.T[i] == None or self.brayton.coolingStates.h[-1] <=0:
+                if self.brayton.coolingStates.T[-1] == None or self.brayton.coolingStates.h[-1] <=0:
                     # failed to converge because cryogenic temperature, mass rate is obviously way too low
                     expanded = False
                     m1 = m2
@@ -1523,7 +1528,7 @@ class CombinedBraytonRankineCycle:
                     m2 = m2 * 1.5
                     break
                 
-                elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i]:
+                elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i+1]:
                     expanded = False
                     m1 = m2
                     m2 = m2 * 1.5
@@ -1531,8 +1536,9 @@ class CombinedBraytonRankineCycle:
 
             if expanded: # ends are good, check intermediate states
                 numPoints = 6
-                braytonSideMain = self.brayton.postTurbStates.get_point(-1)
-                braytonSideMain.extend(self.brayton.coolingStates)
+                #braytonSideMain = self.brayton.postTurbStates.get_point(-1)
+                #braytonSideMain.extend(self.brayton.coolingStates)
+                braytonSideMain = self.brayton.coolingStates.copy()
                 for i in range(0, len(transfers)):
                     if not expanded:
                         break
@@ -1547,7 +1553,6 @@ class CombinedBraytonRankineCycle:
 
                     for j in range(0, numPoints):
                         if rankineIntermediates.T[j] + deltaT > braytonIntermediates.T[j]:
-                            print(j, rankineIntermediates.T[j] + deltaT, braytonIntermediates.T[j])
                             expanded = False
                             m1 = m2
                             m2 = m2 * 1.5
@@ -1564,21 +1569,23 @@ class CombinedBraytonRankineCycle:
             self.add_brayton_cooling_states()
             consistent = True
             for i in range(0, len(transfers)):
-                startTemp = self.brayton.postTurbStates.T[-1]
-                if i > 0:
-                    startTemp = self.brayton.coolingStates.T[i-1]
+                #startTemp = self.brayton.postTurbStates.T[-1]
+                #if i > 0:
+                #    startTemp = self.brayton.coolingStates.T[i-1]
+                startTemp = self.brayton.coolingStates.T[i]
 
-                if transfers[i][0] + deltaT > startTemp or self.brayton.coolingStates.h[i] <=0:
+                if transfers[i][0] + deltaT > startTemp or self.brayton.coolingStates.h[i] <= 0:
                     consistent = False
 
-                elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i]:
+                elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i+1]:
                     consistent = False
 
 
             if consistent: # ends are good, check intermediate states
                 numPoints = 6
-                braytonSideMain = self.brayton.postTurbStates.get_point(-1)
-                braytonSideMain.extend(self.brayton.coolingStates)
+                #braytonSideMain = self.brayton.postTurbStates.get_point(-1)
+                #braytonSideMain.extend(self.brayton.coolingStates)
+                braytonSideMain = self.brayton.coolingStates.copy()
                 for i in range(0, len(transfers)):
                     if not consistent:
                         break
@@ -1593,7 +1600,6 @@ class CombinedBraytonRankineCycle:
 
                     for j in range(0, numPoints):
                         if rankineIntermediates.T[j] + deltaT > braytonIntermediates.T[j]:
-                            print(j, rankineIntermediates.T[j] + deltaT, braytonIntermediates.T[j])
                             consistent = False
                 
 
@@ -1647,17 +1653,18 @@ class CombinedBraytonRankineCycle:
         plt.xlabel("Heat Exhanged - $J kg^{-1}_{rankine}$")
         plt.ylabel("Temperature - $K$")
 
-        braytonSideMain = self.brayton.postTurbStates.get_point(-1)
-        braytonSideMain.extend(self.brayton.coolingStates)
-        h0 = braytonSideMain.h[-1]
+        #braytonSideMain = self.brayton.postTurbStates.get_point(-1)
+        #braytonSideMain.extend(self.brayton.coolingStates)
+        braytonSideMain = self.brayton.coolingStates.copy()
+        h0 = braytonSideMain.h[0]
 
         braytonSideInter = get_intermediate_points(braytonSideMain, 0, braytonSideMain, -1, ["P", "h"], numPoints=6)
 
         for i in range(0, len(braytonSideInter.h)):
-            braytonSideInter.h[i] -= h0
+            braytonSideInter.h[i] = h0 - braytonSideInter.h[i]
             braytonSideInter.h[i] = braytonSideInter.h[i] * self.braytonFlowRate
         for i in range(0, len(braytonSideMain.h)):
-            braytonSideMain.h[i] -= h0
+            braytonSideMain.h[i] = h0 - braytonSideMain.h[i]
             braytonSideMain.h[i] = braytonSideMain.h[i] * self.braytonFlowRate
 
         plt.scatter(braytonSideMain.h, braytonSideMain.T, marker="o", s=STATE_POINT_SIZE)
@@ -1683,8 +1690,10 @@ class CombinedBraytonRankineCycle:
             hOffset = -stateSet.h[0] + self.transferredHeat - alreadyTransferred
             for i in range(0, len(stateSet.T)):
                 stateSet.h[i] += hOffset
+                stateSet.h[i] = self.transferredHeat - stateSet.h[i]
             for i in range(0, len(inter.T)):
                 inter.h[i] += hOffset
+                inter.h[i] = self.transferredHeat - inter.h[i]
 
             rankineSideInter.extend(inter)
             rankineSideMain.extend(stateSet)
