@@ -36,7 +36,7 @@ CEA_TO_COOLPROP_NAMES = {
     "C2H4" : "Ethylene",
 }
 
-KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO", "C(gr)", "O"]
+KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO", "C(gr)", "O", "NO2", "HO2"]
 
 # having these pairs of molecules in a mixture crashes coolprop:
 COOLPROP_INCOMPATIBLE_PAIRS = [
@@ -89,10 +89,7 @@ class Mixture:
         
         return [mix, massFracs, temps]
 
-    def to_coolprop(self):
-        if self.data == AIR().data:
-            return "Air"
-        
+    def filter_for_coolprop(self):
         filtered = Mixture()
         mix = "HEOS::"
         self.sort()
@@ -111,6 +108,13 @@ class Mixture:
                     mix += cpName + "[" + str(part[1]) + "]" + "&"
 
         filtered.normalize()
+        return filtered
+
+    def to_coolprop(self):
+        if self.data == AIR().data:
+            return "Air"
+        
+        filtered = self.filter_for_coolprop()
 
         mix = "HEOS::"
         for part in filtered.data:
@@ -143,7 +147,7 @@ class Mixture:
             self.data[i] = self.data[i][1]
 
     def pie_chart(self, title, temp=None, ax=None):
-        title += " Mole Fractions"
+        title += "\nMole Fractions"
         fracs = []
         labels = []
         for part in self.data:
@@ -160,7 +164,6 @@ class Mixture:
         wedges = ax.pie(fracs)[0]
         ax.set_title(title)
         ax.legend(wedges, labels, loc="upper center", bbox_to_anchor=(0.5, 0))
-        plt.tight_layout()
         plt.show(block=False)
 
     def to_save_str(self):
@@ -632,6 +635,7 @@ class Cycle: # should be valid for both rankine and brayton
         self.addedFuelMassFrac = 0
         self.addedFuelInitialEnthalpy = 0
         self.recycledHeat = 0
+        self.nonNormalizedregeneratorHeat = 0
         self.closedFeedwaterMassRatio = 0
         self.turbineMassRatios = [1] * numTurb # fraction left at each stage after removal from feedwater heater
         self.closedFeedwaterExitEnthalpy = 0
@@ -762,6 +766,8 @@ class Cycle: # should be valid for both rankine and brayton
             elif self.postTurbStates.point_is_solved(i):
                 solve_point_inefficient(self.preTurbStates, i, self.postTurbStates, i, 1 / self.turbineEfficiencies[i])
 
+        self.account_for_regeneration()
+
     def add_pre_combustion_heat_exchange(self, q_in):
         self.solve_cp()
         
@@ -775,6 +781,19 @@ class Cycle: # should be valid for both rankine and brayton
         self.heatingStates.h[1] = self.heatingStates.h[0]
         self.heatingStates.fluid[1] = self.heatingStates.fluid[0]
         self.heatingStates.solve_points()
+
+    def add_regeneration_blind(self, q_in):
+        self.add_pre_combustion_heat_exchange(q_in)
+        self.nonNormalizedregeneratorHeat = q_in
+
+    def account_for_regeneration(self):
+        if self.nonNormalizedregeneratorHeat == 0:
+            return
+        self.recycledHeat = self.nonNormalizedregeneratorHeat * (1 - self.addedFuelMassFrac)
+        self.coolingStates = SetOfStates(1, self.postTurbStates.fluid[-1].copy())
+        self.coolingStates.h[0] = self.postTurbStates.h[-1] - self.recycledHeat
+        self.coolingStates.P[0] = self.postTurbStates.P[-1]
+        self.coolingStates.solve_points()
         
 
     def inject_fuel_after_compressor(self, fuelMixture, fuelTotalMassFraction, fuelCompressorEfficiency):
@@ -1391,10 +1410,12 @@ class Cycle: # should be valid for both rankine and brayton
         if self.addedFuelMassFrac != 0:
             fig = plt.figure()
             fig.suptitle(title)
-            axs = fig.subplots(1, 3)
+            axs = fig.subplots(1, 4, gridspec_kw={'hspace': 0})
             self.preCompStates.fluid[0].pie_chart("Inlet", ax=axs[0])
             self.heatingStates.fluid[1].pie_chart("Pre-Combustion", temp=self.heatingStates.T[1], ax=axs[1])
-            self.preTurbStates.fluid[0].pie_chart("Post-Combustion", temp=self.heatingStates.T[0], ax=axs[2])
+            self.preTurbStates.fluid[0].pie_chart("Post-Combustion CEA Result", temp=self.heatingStates.T[0], ax=axs[2])
+            self.preTurbStates.fluid[0].filter_for_coolprop().pie_chart("Post-Combustion used by CoolProp", temp=self.heatingStates.T[0], ax=axs[3])
+            
 
         else:
             self.preCompStates.fluid[0].pie_chart(title, ax=axs[0])
@@ -1830,17 +1851,90 @@ def graph_fuel_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEff
     plt.show(block=False)
 
 
-def fuel_mass_fuel_efficiency_gradient(parentCycle, fuel, fuelCompressorEfficiency, frac):
+def optimize_regenerator_energy(parentCycle, deltaT, fuel, fuelCompressorEfficiency, fuelFrac, showGraph=False):
+    if showGraph:
+        plt.figure()
+        plt.xlabel("iteration")
+        plt.ylabel("Regenerated heat - $J kg^{-1}_{air}$")
+        plt.title("Regenerator Convergence")
+    
+    q1 = 0
+    q2 = 10000
+
+    i = 0
+    expanded = False
+    while not expanded:
+        cycle = parentCycle.copy()
+        cycle.add_regeneration_blind(q2)
+        
+        try:
+            cycle.inject_fuel_after_compressor(fuel, fuelFrac, fuelCompressorEfficiency)
+            cycle.combust()
+            
+            if cycle.coolingStates.T[0] - cycle.heatingStates.T[0] > deltaT:
+                q1 = q2
+                q2 = q2 * 2
+            else:
+                expanded = True
+        except:
+            expanded = True
+        
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [q1, q2])
+            plt.show(block=False)
+            plt.pause(0.5)
+
+    i += 2 # show gap in convergence graph
+    
+    while q2 - q1 > 1:
+        q = (q1 + q2) / 2
+        cycle = parentCycle.copy()
+        cycle.add_regeneration_blind(q)
+        
+        try:
+            cycle.inject_fuel_after_compressor(fuel, fuelFrac, fuelCompressorEfficiency)
+            cycle.combust()
+
+            if cycle.coolingStates.T[0] - cycle.heatingStates.T[0] < deltaT:
+                q2 = q
+            else:
+                q1 = q
+        except:
+            q2 = q
+            
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [q1, q2])
+            plt.show(block=False)
+            plt.pause(0.5)
+    
+    return q1
+
+def fuel_mass_fuel_efficiency_gradient(parentCycle, fuel, fuelCompressorEfficiency, frac, regeneratorDeltaT=None):
     interval = 0.00001
-    cycle1 = copy.deepcopy(parentCycle)
-    cycle2 = copy.deepcopy(parentCycle)
-    cycle1.inject_fuel_after_compressor(Mixture([["CH4", 1]]), frac - interval / 2, fuelCompressorEfficiency)
-    cycle2.inject_fuel_after_compressor(Mixture([["CH4", 1]]), frac + interval / 2, fuelCompressorEfficiency)
+    cycle1 = parentCycle.copy()
+    cycle2 = parentCycle.copy()
+    
+    if regeneratorDeltaT != None:
+        tasks = [[parentCycle, regeneratorDeltaT, fuel, fuelCompressorEfficiency, frac - interval / 2],
+                 [parentCycle, regeneratorDeltaT, fuel, fuelCompressorEfficiency, frac + interval / 2]]
+
+        with multiprocessing.Pool(processes=2) as pool:
+            q = pool.starmap(optimize_regenerator_energy, tasks)
+        
+        #q = optimize_regenerator_energy(parentCycle, regeneratorDeltaT, fuel, fuelCompressorEfficiency, frac)
+        cycle1.add_regeneration_blind(q[0])
+        cycle2.add_regeneration_blind(q[1])
+    
+    cycle1.inject_fuel_after_compressor(fuel, frac - interval / 2, fuelCompressorEfficiency)
+    cycle2.inject_fuel_after_compressor(fuel, frac + interval / 2, fuelCompressorEfficiency)
     cycle1.combust()
     cycle2.combust()
     return (cycle2.fuel_efficiency() - cycle1.fuel_efficiency()) / interval
 
-def optimize_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, frac1, frac2, showGraph=False):
+def optimize_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, frac2, regeneratorDeltaT=None, showGraph=False):
+    frac1 = 0
     if showGraph:
         plt.figure()
         plt.xlabel("iteration")
@@ -1851,7 +1945,7 @@ def optimize_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, frac1, 
     i = 0
     while frac2 - frac1 > tolerance:
         frac = (frac1 + frac2) / 2
-        grad = fuel_mass_fuel_efficiency_gradient(parentCycle, fuel, fuelCompressorEfficiency, frac)
+        grad = fuel_mass_fuel_efficiency_gradient(parentCycle, fuel, fuelCompressorEfficiency, frac, regeneratorDeltaT=regeneratorDeltaT)
         if grad > 0:
             frac1 = frac
         elif grad < 0:
@@ -1863,6 +1957,7 @@ def optimize_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, frac1, 
             i += 1
             plt.plot([i, i], [frac1, frac2])
             plt.show(block=False)
+            plt.pause(0.5)
 
     return (frac1 + frac2) / 2
     
