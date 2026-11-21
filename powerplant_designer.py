@@ -989,6 +989,19 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
+    def brayton_optimize_fixed_pressure(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
+        # warning - takes approx 1 hour to run if using a regenerator
+        frac = optimize_fuel_mass_frac(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+        print("frac = ", frac)
+        
+        if regeneratorDeltaT != None:
+            q = optimize_regenerator_energy(self, regeneratorDeltaT, fuel, fuelCompressorEfficiency, frac)
+            self.add_regeneration_blind(q)
+            print("q = ", q)
+        
+        self.inject_fuel_after_compressor(fuel, frac, fuelCompressorEfficiency)
+        self.combust()
+
 
     def compressor_works(self):
         self.preCompStates.make_consistent(True)
@@ -1410,7 +1423,7 @@ class Cycle: # should be valid for both rankine and brayton
         if self.addedFuelMassFrac != 0:
             fig = plt.figure()
             fig.suptitle(title)
-            axs = fig.subplots(1, 4, gridspec_kw={'hspace': 0})
+            axs = fig.subplots(1, 4, gridspec_kw={'wspace': 0})
             self.preCompStates.fluid[0].pie_chart("Inlet", ax=axs[0])
             self.heatingStates.fluid[1].pie_chart("Pre-Combustion", temp=self.heatingStates.T[1], ax=axs[1])
             self.preTurbStates.fluid[0].pie_chart("Post-Combustion CEA Result", temp=self.heatingStates.T[0], ax=axs[2])
@@ -1528,11 +1541,6 @@ class CombinedBraytonRankineCycle:
             self.add_brayton_cooling_states()
             expanded = True
             for i in range(0, len(transfers)):
-                #startTemp = self.brayton.postTurbStates.T[-1]
-                #if i > 0:
-                #    startTemp = self.brayton.coolingStates.T[i-1]
-                startTemp = self.brayton.coolingStates.T[i]
-                
                 if self.brayton.coolingStates.T[-1] == None or self.brayton.coolingStates.h[-1] <=0:
                     # failed to converge because cryogenic temperature, mass rate is obviously way too low
                     expanded = False
@@ -1540,7 +1548,7 @@ class CombinedBraytonRankineCycle:
                     m2 = m2 * 1.5
                     break
                 
-                elif transfers[i][0] + deltaT > startTemp:
+                elif transfers[i][0] + deltaT > self.brayton.coolingStates.T[i]:
                     if i == 0:
                         print("Brayton Turbine exit temperature is lower than rankine boiler temperature")
                         return False
@@ -1557,8 +1565,6 @@ class CombinedBraytonRankineCycle:
 
             if expanded: # ends are good, check intermediate states
                 numPoints = 6
-                #braytonSideMain = self.brayton.postTurbStates.get_point(-1)
-                #braytonSideMain.extend(self.brayton.coolingStates)
                 braytonSideMain = self.brayton.coolingStates.copy()
                 for i in range(0, len(transfers)):
                     if not expanded:
@@ -1590,12 +1596,7 @@ class CombinedBraytonRankineCycle:
             self.add_brayton_cooling_states()
             consistent = True
             for i in range(0, len(transfers)):
-                #startTemp = self.brayton.postTurbStates.T[-1]
-                #if i > 0:
-                #    startTemp = self.brayton.coolingStates.T[i-1]
-                startTemp = self.brayton.coolingStates.T[i]
-
-                if transfers[i][0] + deltaT > startTemp or self.brayton.coolingStates.h[i] <= 0:
+                if transfers[i][0] + deltaT > self.brayton.coolingStates.T[i] or self.brayton.coolingStates.h[i] <= 0:
                     consistent = False
 
                 elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i+1]:
@@ -1604,8 +1605,6 @@ class CombinedBraytonRankineCycle:
 
             if consistent: # ends are good, check intermediate states
                 numPoints = 6
-                #braytonSideMain = self.brayton.postTurbStates.get_point(-1)
-                #braytonSideMain.extend(self.brayton.coolingStates)
                 braytonSideMain = self.brayton.coolingStates.copy()
                 for i in range(0, len(transfers)):
                     if not consistent:
@@ -1640,8 +1639,8 @@ class CombinedBraytonRankineCycle:
             self.transferredHeat += part[2]
         self.braytonFlowRate = m2
 
-    def ts_diagram(self):
-        fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
+    def ts_diagram(self, showEchangeLines=False):
+        fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05})
         fig.suptitle("Combined Cycle Ts Diagram")
         ax1.set_title("Brayton")
         ax2.set_title("Rankine")
@@ -1651,22 +1650,24 @@ class CombinedBraytonRankineCycle:
         self.brayton.ts_diagram(ax=ax1)
         self.rankine.ts_diagram(ax=ax2, isRankine=True)
 
-        transfers = self.rankine.get_q_in_and_temps()
-        for i in range(0, len(transfers)):
-            T = transfers[i][0]
-            if i == 0:
-                xyA = (self.brayton.postTurbStates.s[-1], T)
-            else:
-                xyA = (self.brayton.coolingStates.s[i-1], T)
-            xyB = (transfers[i][3], T)
-            con1 = ConnectionPatch(xyA, xyB, "data", "data", axesA=ax1, axesB=ax2, linestyle="dashdot")
-            fig.add_artist(con1)
-            T = transfers[i][1]
-            xyA = (self.brayton.coolingStates.s[i], T)
-            xyB = (transfers[i][4], T)
-            con2 = ConnectionPatch(xyA, xyB, "data", "data", axesA=ax1, axesB=ax2, linestyle="dashdot")
-            fig.add_artist(con2)
-        plt.show(block=False)
+        if showEchangeLines:
+            transfers = self.rankine.get_q_in_and_temps()
+            for i in range(0, len(transfers)):
+                T = transfers[i][0]
+                #if i == 0:
+                #    xyA = (self.brayton.postTurbStates.s[-1], T)
+                #else:
+                #    xyA = (self.brayton.coolingStates.s[i-1], T)
+                xyA = (self.brayton.coolingStates.s[i], T)
+                xyB = (transfers[i][3], T)
+                con1 = ConnectionPatch(xyA, xyB, "data", "data", axesA=ax1, axesB=ax2, linestyle="dashdot")
+                fig.add_artist(con1)
+                T = transfers[i][1]
+                xyA = (self.brayton.coolingStates.s[i+1], T)
+                xyB = (transfers[i][4], T)
+                con2 = ConnectionPatch(xyA, xyB, "data", "data", axesA=ax1, axesB=ax2, linestyle="dashdot")
+                fig.add_artist(con2)
+            plt.show(block=False)
 
     def transfer_th_diagram(self):
         plt.figure()
@@ -1923,7 +1924,6 @@ def fuel_mass_fuel_efficiency_gradient(parentCycle, fuel, fuelCompressorEfficien
         with multiprocessing.Pool(processes=2) as pool:
             q = pool.starmap(optimize_regenerator_energy, tasks)
         
-        #q = optimize_regenerator_energy(parentCycle, regeneratorDeltaT, fuel, fuelCompressorEfficiency, frac)
         cycle1.add_regeneration_blind(q[0])
         cycle2.add_regeneration_blind(q[1])
     
@@ -1961,6 +1961,41 @@ def optimize_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, frac2, 
 
     return (frac1 + frac2) / 2
     
+
+def get_optimized_fuel_efficiency_at_pressure(parentCycle, fuel, fuelCompressorEfficiency, maxFuelFrac, combustionPressure, regeneratorDeltaT):
+    cycle = parentCycle.copy()
+    cycle.postCompStates.P[-1] = combustionPressure
+    cycle.propagate_assuming_no_pressure_losses()
+    cycle.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+    return cycle.fuel_efficiency()
+
+def graph_fuel_efficiency_vs_combustion_pressure(parentCycle, fuel, fuelCompressorEfficiency, maxFuelFrac, minP, maxP, regeneratorDeltaT=None, numPoints=12):
+    pressures = []
+    tasks = []
+
+    for i in range(0, numPoints):
+        P = minP + (maxP - minP) * i / numPoints
+        pressures.append(P)
+        tasks.append([parentCycle, fuel, fuelCompressorEfficiency, maxFuelFrac, P, regeneratorDeltaT])
+
+    with multiprocessing.Pool(processes=3) as pool:
+        efficiencies = pool.starmap(get_optimized_fuel_efficiency_at_pressure, tasks)
+    
+    plt.figure()
+    plt.xlabel("Combustion Pressure - $Pa$")
+    plt.ylabel("Fuel Efficiency ($\\dot{w}_{out} / \\dot{m}_{fuel}$)")
+    plt.scatter(pressures, efficiencies)
+    plt.show(block=False)
+
+
+
+
+
+
+
+
+
+# rankine optimization:
 
 def graph_efficiency_vs_feedwater_pressure(parentCycle, tempDiff, turbineIndex, numPoints, removeReheater=True):
     maxP = parentCycle.preTurbStates.P[0] - 10
