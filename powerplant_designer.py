@@ -992,15 +992,24 @@ class Cycle: # should be valid for both rankine and brayton
     def brayton_optimize_fixed_pressure(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
         # warning - takes approx 1 hour to run if using a regenerator
         frac = optimize_fuel_mass_frac(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
-        print("frac = ", frac)
         
         if regeneratorDeltaT != None:
             q = optimize_regenerator_energy(self, regeneratorDeltaT, fuel, fuelCompressorEfficiency, frac)
             self.add_regeneration_blind(q)
-            print("q = ", q)
         
         self.inject_fuel_after_compressor(fuel, frac, fuelCompressorEfficiency)
         self.combust()
+
+    def brayton_optimize(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
+        # If multiple intercoolers, only 1 intercooler can be optimized, and others must have predetermined pressure
+
+        for i in range(0, len(self.postCompStates.P) - 1):
+            if self.postCompStates.P == None:
+                P = optimize_intercooler_pressure(self, i, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+                self.postCompStates.P[i] = P
+                self.preCompStates.P[i+1] = P
+        
+        self.brayton_optimize_fixed_pressure(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
 
 
     def compressor_works(self):
@@ -1987,6 +1996,77 @@ def graph_fuel_efficiency_vs_combustion_pressure(parentCycle, fuel, fuelCompress
     plt.scatter(pressures, efficiencies)
     plt.show(block=False)
 
+def get_optimized_fuel_efficiency_at_intercooler_pressure(parentCycle, compressorIndex, intercoolerPressure, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT):
+    cycle = parentCycle.copy()
+    cycle.postCompStates.P[compressorIndex] = intercoolerPressure
+    cycle.preCompStates.P[compressorIndex + 1] = intercoolerPressure
+    cycle.solve_cp()
+    cycle.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+    return cycle.fuel_efficiency()
+
+def graph_fuel_efficiency_vs_intercooler_pressure(parentCycle, compressorIndex, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None, numPoints=10):
+    maxP = parentCycle.postCompStates.P[compressorIndex + 1] - 10
+    minP = parentCycle.preCompStates.P[compressorIndex] + 10
+    
+    pressures = []
+    efficiencies = []
+    tasks = []
+    for i in range(0, numPoints):
+        P = minP + (maxP - minP) * i / numPoints
+        pressures.append(P)
+        tasks.append([parentCycle, compressorIndex, P, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT])
+
+    with multiprocessing.Pool(processes=3) as pool:
+        efficiencies = pool.starmap(get_optimized_fuel_efficiency_at_intercooler_pressure, tasks)
+    
+    plt.figure()
+    plt.xlabel("Intercooler " + str(compressorIndex) + " Pressure - $Pa$")
+    plt.ylabel("Fuel Efficiency")
+    plt.scatter(pressures, efficiencies)
+    plt.show(block=False)
+
+def intercooler_pressure_fuel_efficiency_gradient(parentCycle, compressorIndex, intercoolerPressure, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
+    interval = 0.0001
+    tasks = [[parentCycle, compressorIndex, intercoolerPressure - interval / 2, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT],
+             [parentCycle, compressorIndex, intercoolerPressure + interval / 2, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT]]
+    with multiprocessing.Pool(processes=2) as pool:
+        efficiencies = pool.starmap(get_optimized_fuel_efficiency_at_intercooler_pressure, tasks)
+
+    return (efficiencies[1] - efficiencies[0]) / interval
+
+def optimize_intercooler_pressure(parentCycle, compressorIndex, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None, showGraph=False):
+    if showGraph:
+        plt.figure()
+        plt.xlabel("iteration")
+        plt.ylabel("Pressure - $J kg^{-1}_{air}$")
+        plt.title("Intercooler " + str(compressorIndex) + " Convergence")
+
+    tolerance = 1
+    i = 0
+    P2 = parentCycle.postCompStates.P[compressorIndex + 1] - 10
+    P1 = parentCycle.preCompStates.P[compressorIndex] + 10
+
+    while P2 - P1 > tolerance:
+        P = (P1 + P2) / 2
+        grad = intercooler_pressure_fuel_efficiency_gradient(parentCycle, compressorIndex, P, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+        
+        if grad > 0:
+            P1 = P
+        elif grad < 0:
+            P2 = P
+        else:
+            return P
+
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [P1, P2])
+            plt.show(block=False)
+            plt.pause(0.5)
+
+    return (P1 + P2) / 2
+
+
+
 
 
 
@@ -2008,7 +2088,7 @@ def graph_efficiency_vs_feedwater_pressure(parentCycle, tempDiff, turbineIndex, 
     efficiencies = []
     for i in range(0, numPoints):
         P = minP + (maxP - minP) * i / numPoints
-        cycle = copy.deepcopy(parentCycle)
+        cycle = parentCycle.copy()
         cycle.postTurbStates.P[turbineIndex] = P
         cycle.set_closed_feedwater_heater_from_temp_diff(tempDiff, turbineIndex, removeReheater=removeReheater)
         cycle.solve_cp()
