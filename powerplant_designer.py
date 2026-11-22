@@ -342,6 +342,7 @@ class SetOfStates():
             return self.X[i]
 
     def to_save_str(self):
+        self.make_consistent(True)
         text = "T="
         for val in self.T:
             text += str(val) + ","
@@ -368,6 +369,8 @@ class SetOfStates():
         return text[:-1]
 
     def from_save_str(self, text):
+        self.consistent = True
+        
         for line in text.split("\n"):
             if line == "":
                 continue
@@ -598,6 +601,8 @@ def load_cycle(path):
             cycle.compressorEfficiencies = []
             for e in val.split(","):
                 cycle.compressorEfficiencies.append(parse(e))
+        elif prop == "nonNormalizedregeneratorHeat":
+            cycle.nonNormalizedregeneratorHeat = parse(val)
 
     for stateList in states:
         name, data = stateList.split("<>\n")
@@ -673,6 +678,7 @@ class Cycle: # should be valid for both rankine and brayton
         for e in self.compressorEfficiencies:
             data += str(e) + ","
         data = data[:-1] + "\n"
+        data += "nonNormalizedregeneratorHeat=" + str(self.nonNormalizedregeneratorHeat) + "\n"
 
         data += "<><>\npreCompStates<>\n"
         data += self.preCompStates.to_save_str() + "\n"
@@ -1468,7 +1474,31 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
+def load_combined(path):
+    if path.lower().endswith(".ppds"):
+        path = path[:-5]
 
+    brayton = load_cycle(path + "_B")
+    rankine = load_cycle(path + "_R")
+    system = CombinedBraytonRankineCycle(brayton, rankine)
+
+    file = open(path + ".ppds", "r")
+    data = file.read().split("\n")
+    file.close()
+
+    for line in data:
+        if line == "":
+            continue
+        prop, val = line.split("=")
+
+        if prop == "braytonFlowRate":
+            system.braytonFlowRate = parse(val)
+        elif prop == "transferredHeat":
+            system.transferredHeat = parse(val)
+        else:
+            print("ERROR: unknown parameter loading combined cycle:", prop)
+
+    return system
 
 class CombinedBraytonRankineCycle:
     def __init__(self, brayton, rankine):
@@ -1476,6 +1506,23 @@ class CombinedBraytonRankineCycle:
         self.rankine = rankine
         self.braytonFlowRate = 1 # brayton flow rate / rankine flow rate
         self.transferredHeat = 0  # heat transefer from brayton to rankine
+
+    def save(self, path):
+        if path.lower().endswith(".ppds"):
+            path = path[:-5]
+        self.brayton.save(path + "_B")
+        self.rankine.save(path + "_R")
+        path += ".ppds" # PowerPlant Designer combined System
+
+        data = ""
+        data += "braytonFlowRate=" + str(self.braytonFlowRate) + "\n"
+        data += "transferredHeat=" + str(self.transferredHeat) + "\n"
+
+        data = data[:-1]
+        
+        file = open(path, "w")
+        file.write(data)
+        file.close()
 
     def q_in(self): # assuming no heat recycling within each cycle
         return self.brayton.q_in() * self.braytonFlowRate + self.rankine.q_in() - self.transferredHeat
