@@ -1,33 +1,23 @@
 if __name__ == "__main__":
     import powerplant_designer as pd
     pd.init()
-
-    brayton = pd.Cycle(1, 1, pd.AIR())
-    brayton.preCompStates.P = [101325]
-    brayton.postCompStates.P = [500000]
-    brayton.preCompStates.T = [298]
-
-    brayton.turbineEfficiencies = [0.87]
-    brayton.compressorEfficiencies = [0.85]
-
-    deltaT = 10
     
+    brayton = pd.Cycle(2, 1, pd.AIR())
+    brayton.preCompStates.P = [101325, None]
+    brayton.postCompStates.P = [None, 500000]
+    brayton.preCompStates.T = [298, 310]
     brayton.propagate_assuming_no_pressure_losses()
 
-    frac = pd.optimize_fuel_mass_frac(brayton, pd.Mixture([["CH4", 1]]), 0.85, 0.08, regeneratorDeltaT=deltaT, showGraph=True)
-    print("Optimal fuel mass fraction:", frac)
-    #frac = 0.01470458984375 # basic cycle
-    #frac = 0.0137109375 # with regeneration
+    brayton.turbineEfficiencies = [0.87]
+    brayton.compressorEfficiencies = [0.85, 0.85]
     
-    q = pd.optimize_regenerator_energy(brayton, deltaT, pd.Mixture([["CH4", 1]]), 0.85, frac, showGraph=True)
-    brayton.add_regeneration_blind(q)
-    print("Optimal regenerator energy:", q)
-
-
-    brayton.inject_fuel_after_compressor(pd.Mixture([["CH4", 1]]), frac, 0.85)
-    brayton.combust()
-
-    brayton.save("cycles/regenerated brayton.ppdc")
+    #pd.graph_fuel_efficiency_vs_intercooler_pressure(brayton, 0, pd.Mixture([["CH4", 1]]), 0.85, 0.08, regeneratorDeltaT=10)
+    #import sys
+    #sys.exit()
+    
+    brayton.brayton_optimize(pd.Mixture([["CH4", 1]]), 0.85, 0.05, regeneratorDeltaT=10)
+    
+    brayton.save("cycles/regenerated brayton with intercooler.ppdc")
     brayton.print_design_info()
     brayton.print_all_states()
     brayton.print_energy_calcs()
