@@ -45,6 +45,34 @@ COOLPROP_INCOMPATIBLE_PAIRS = [
     ["Nitrogen", "NH3"]
 ]
 
+pieChartColors = dict()
+colors = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown", "tab:pink", "tab:gray", "tab:olive", "tab:cyan", "gold", "aquamarine", "m"]
+
+def get_color(molecule):
+    if molecule in pieChartColors.keys():
+        return pieChartColors[molecule]
+
+    c = colors[0]
+    colors.pop(0)
+    colors.append(c)
+    pieChartColors[molecule] = c
+    return c
+
+def to_latex(molecule):
+    latex = "$"
+    prevWasChar = False
+    for char in molecule:
+        if char in "0123456789" and prevWasChar:
+            latex += "_"
+        
+        latex += char
+        
+        prevWasChar = True
+        if char in "0123456789":
+            prevWasChar = False
+
+    return latex + "$"
+
 def cea_to_cp_name(name):
     if name in KNOWN_CP_UNSUPPORTED:
         return None
@@ -150,18 +178,20 @@ class Mixture:
         title += "\nMole Fractions"
         fracs = []
         labels = []
+        c = []
         for part in self.data:
             fracs.append(part[1])
+            c.append(get_color(part[0]))
             if len(part) > 2:
-                labels.append(part[0] + "  T = " + str(round(part[2], 2)) + " K  (" + str(round(100*part[1], 3)) + "%)")
+                labels.append(to_latex(part[0]) + "  T = " + str(round(part[2], 2)) + " K  (" + str(round(100*part[1], 3)) + "%)")
             elif temp != None:
-                labels.append(part[0] + "  T = " + str(round(temp, 2)) + " K  (" + str(round(100*part[1], 3)) + "%)")
+                labels.append(to_latex(part[0]) + "  T = " + str(round(temp, 2)) + " K  (" + str(round(100*part[1], 3)) + "%)")
             else:
-                labels.append(part[0] + "  (" + str(round(100*part[1], 3)) + "%)")
+                labels.append(to_latex(part[0]) + "  (" + str(round(100*part[1], 3)) + "%)")
 
         if ax == None:
             ax = plt.figure().subplots()
-        wedges = ax.pie(fracs)[0]
+        wedges = ax.pie(fracs, colors=c)[0]
         ax.set_title(title)
         ax.legend(wedges, labels, loc="upper center", bbox_to_anchor=(0.5, 0))
         plt.show(block=False)
