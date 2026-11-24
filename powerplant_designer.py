@@ -38,7 +38,7 @@ CEA_TO_COOLPROP_NAMES = {
 
 KNOWN_CP_UNSUPPORTED = ["H", "OH", "NO", "C(gr)", "O", "NO2", "HO2"]
 
-# having these pairs of molecules in a mixture crashes coolprop:
+# having these pairs of molecules in a mixture together crashes coolprop:
 COOLPROP_INCOMPATIBLE_PAIRS = [
     ["Argon", "Neon"],
     ["Methane", "NH3"],
@@ -648,6 +648,9 @@ def load_cycle(path):
             cycle.postTurbStates.from_save_str(data)
         if name == "coolingStates":
             cycle.coolingStates.from_save_str(data)
+        if name == "fuelStates":
+            cycle.fuelStates = SetOfStates(0)
+            cycle.fuelStates.from_save_str(data)
 
 
 
@@ -676,9 +679,11 @@ class Cycle: # should be valid for both rankine and brayton
         self.closedFeedwaterExitEnthalpy = 0
         self.closedFeedwaterHeatTransfer = 0
         self.closedFeedwaterTurbineIndex = None
+        self.fuelStates = None
 
         self.allStateSets = [self.preCompStates, self.postCompStates, self.preTurbStates, self.postTurbStates]
         self.intermediates = None
+        self.fuelIntermediates = None
 
     def copy(self):
         return copy.deepcopy(self)
@@ -720,6 +725,10 @@ class Cycle: # should be valid for both rankine and brayton
         data += self.preTurbStates.to_save_str() + "\n"
         data += "<><>\npostTurbStates<>\n"
         data += self.postTurbStates.to_save_str() + "\n"
+
+        if self.fuelStates != None:
+            data += "<><>\nfuelStates<>\n"
+            data += self.fuelStates.to_save_str() + "\n"
 
         if len(self.coolingStates.T) > 0:
             data += "<><>\ncoolingStates<>\n"
@@ -847,6 +856,15 @@ class Cycle: # should be valid for both rankine and brayton
         fuelTemp = cp.PropsSI("T", "P", self.heatingStates.P[0], "Hmass", h1, fuelMixture.to_coolprop())
         self.externalFuelCompressionWork = (h1 - h0) * fuelTotalMassFraction
         self.addedFuelInitialEnthalpy = h0
+        
+        self.fuelStates = SetOfStates(2, fuelMixture)
+        self.fuelStates.P[0] = 101325
+        self.fuelStates.T[0] = 298
+        self.fuelStates.P[1] = self.heatingStates.P[0]
+        self.fuelStates.T[1] = fuelTemp
+        self.fuelStates.h[1] = h1
+        self.fuelStates.s[0] = s0
+        self.fuelStates.solve_points()
 
         M_oxidiser = cp.PropsSI("molar_mass", "P", self.heatingStates.P[0], "T", self.heatingStates.T[0], self.heatingStates.fluid[0].to_coolprop())
         M_fuel = cp.PropsSI("molar_mass", "P", self.heatingStates.P[0], "T", fuelTemp, fuelMixture.to_coolprop())
@@ -1340,6 +1358,9 @@ class Cycle: # should be valid for both rankine and brayton
 
         self.intermediates.make_consistent(True)
 
+        if self.fuelStates != None:
+            self.fuelIntermediates = get_intermediate_points(self.fuelStates, 0, self.fuelStates, 1, ["h", "s"])
+
 
     def get_closed_feedwater_states(self):
         i = self.closedFeedwaterTurbineIndex
@@ -1423,6 +1444,13 @@ class Cycle: # should be valid for both rankine and brayton
             ax.set_ylabel(original_ylabel)
             ax.autoscale(True)
 
+        if self.fuelIntermediates != None:
+            if label == None:
+                label = "fuel compression"
+            else:
+                label += " - fuel compression"
+            ax.plot(self.fuelIntermediates.s, self.fuelIntermediates.T, marker=".", label=label)
+
         if self.closedFeedwaterTurbineIndex != None:
             self.closed_feedwater_ts(ax)
         
@@ -1462,6 +1490,13 @@ class Cycle: # should be valid for both rankine and brayton
         y = self.intermediates.P
         
         ax.plot(x, y, marker=".")
+        
+        if self.fuelIntermediates != None:
+            if label == None:
+                label = "fuel compression"
+            else:
+                label += " - fuel compression"
+            ax.plot(self.fuelIntermediates.v, self.fuelIntermediates.P, marker=".", label=label)
         
         if label != None:
             ax.legend()
@@ -1641,7 +1676,7 @@ class CombinedBraytonRankineCycle:
                 
                 elif transfers[i][0] + deltaT > self.brayton.coolingStates.T[i]:
                     if i == 0:
-                        print("Brayton Turbine exit temperature is lower than rankine boiler temperature")
+                        print("WARNING: Brayton Turbine exit temperature is lower than rankine boiler temperature")
                         return False
                     expanded = False
                     m1 = m2
@@ -1730,7 +1765,7 @@ class CombinedBraytonRankineCycle:
             self.transferredHeat += part[2]
         self.braytonFlowRate = m2
 
-    def ts_diagram(self, showEchangeLines=False):
+    def ts_diagram(self, showExchangeLines=False):
         fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05})
         fig.suptitle("Combined Cycle Ts Diagram")
         ax1.set_title("Brayton")
@@ -1741,7 +1776,7 @@ class CombinedBraytonRankineCycle:
         self.brayton.ts_diagram(ax=ax1)
         self.rankine.ts_diagram(ax=ax2, isRankine=True)
 
-        if showEchangeLines:
+        if showExchangeLines:
             transfers = self.rankine.get_q_in_and_temps()
             for i in range(0, len(transfers)):
                 T = transfers[i][0]
@@ -1891,6 +1926,31 @@ class CombinedBraytonRankineCycle:
 
 
 
+# Combined cycle optimization:
+
+def graph_combined_fuel_efficiency_vs_regenerator_heat(parentSystem, maxHeat, fuel, fuelCompressorEfficiency, maxFuelFrac, numPoints=10):
+    heats = []
+    efficiencies = []
+    tasks = []
+    for i in range(0, numPoints):
+        q = i * maxHeat / numPoints
+        system = parentSystem.copy()
+        
+        system.brayton.add_regeneration_blind(q)
+        frac = optimize_fuel_mass_frac(system.brayton, fuel, fuelCompressorEfficiency, maxFuelFrac)
+        system.brayton.inject_fuel_after_compressor(fuel, frac, fuelCompressorEfficiency)
+        system.brayton.combust()
+        system.adjust_brayton_flow_rate(10)
+        
+        heats.append(q)
+        efficiencies.append(system.fuel_efficiency())
+        print(i)
+    
+    plt.figure()
+    plt.xlabel("Regenerated Heat - $kJ kg^{-1}$")
+    plt.ylabel("Fuel Efficiency ($\\dot{w}_{out} / \\dot{m}_{fuel}$)")
+    plt.scatter(heats, efficiencies)
+    plt.show(block=False)
 
 
 
@@ -1906,6 +1966,12 @@ class CombinedBraytonRankineCycle:
 
 
 
+
+
+
+
+
+# Brayton optimization:
 
 
 def graph_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficiency, minFrac, maxFrac, numPoints):
