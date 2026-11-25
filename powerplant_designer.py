@@ -447,7 +447,7 @@ class SetOfStates():
 def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, fluid2, i, numPoints):
     linValues = []
     for j in range(0, len(linearProperties)):
-        val = starts[j] + (ends[j] - starts[j]) * i / numPoints
+        val = starts[j] + (ends[j] - starts[j]) * i / (numPoints-1)
         if linearProperties[j] == "D":
             linValues.append(1 / val)
         else:
@@ -481,7 +481,7 @@ def intermediate_points_worker_pool(linearProperties, starts, ends, fluid1, flui
         
 
         for k in range(0, len(data)):
-            data[k] = data[k] + (data2[k] - data[k]) * i / numPoints
+            data[k] = data[k] + (data2[k] - data[k]) * i / (numPoints-1)
     
     return data
 
@@ -1006,13 +1006,17 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
-    def rankine_optimize_fixed_compression(self, turbineExitQualities, feedwaterArgs=None):
+    def rankine_optimize_fixed_compression(self, turbineExitQualities, feedwaterArgs=None, skipTempOpt=False):
+        if skipTempOpt:
+            self.rankine_optimize_no_temp_changes(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+            return
+        
         for i in range(0, len(self.preTurbStates.P)):
             if self.preTurbStates.T[i] != None:
                 if feedwaterArgs == None:
-                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs)
+                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
                 elif self.preTurbStates.T[i] != feedwaterArgs[1]:
-                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs)
+                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
         
         self.rankine_optimize_no_temp_changes(turbineExitQualities, feedwaterArgs=feedwaterArgs)
 
@@ -1031,15 +1035,15 @@ class Cycle: # should be valid for both rankine and brayton
         
         self.solve_rankine_reheater_pressures(-1, turbineExitQualities)
 
-    def rankine_optimize_fixed_target_quality(self, turbineExitQualities, feedwaterArgs=None):
-        boilerPressure = rankine_optimize_boiler_pressure(self, turbineExitQualities, feedwaterArgs=feedwaterArgs)
+    def rankine_optimize_fixed_target_quality(self, turbineExitQualities, feedwaterArgs=None, skipTempOpt=False):
+        boilerPressure = rankine_optimize_boiler_pressure(self, turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
         self.postCompStates.P[-1] = boilerPressure
         self.propagate_assuming_no_pressure_losses()
-        self.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        self.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
 
-    def rankine_optimize(self, turbineExitQualities, feedwaterArgs=None):
-        turbineExitQualities = rankine_optimize_target_quality(self, turbineExitQualities, feedwaterArgs=feedwaterArgs)
-        self.rankine_optimize_fixed_target_quality(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+    def rankine_optimize(self, turbineExitQualities, feedwaterArgs=None, skipTempOpt=False):
+        turbineExitQualities = rankine_optimize_target_quality(self, turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
+        self.rankine_optimize_fixed_target_quality(turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
 
 
 
@@ -1162,13 +1166,24 @@ class Cycle: # should be valid for both rankine and brayton
     def w_net(self):
         if self.closedFeedwaterMassRatio >= 1:
             return 0
-        return self.w_out() - self.w_in()
+        try:
+            return self.w_out() - self.w_in()
+        except:
+            print("ERROR calculating net work")
+            return 0
 
     def efficiency(self):
-        return self.w_net() / (self.q_in() - self.recycledHeat)
+        try:
+            return self.w_net() / (self.q_in() - self.recycledHeat)
+        except:
+            print("ERROR calculating efficiency")
+            return 0
 
     def back_work(self):
-        return self.w_in() / self.w_out()
+        try:
+            return self.w_in() / self.w_out()
+        except:
+            return 0
 
     def efficiency_2nd_law(self):
         T_H = max(self.preTurbStates.T)
@@ -1722,7 +1737,12 @@ class CombinedBraytonRankineCycle:
             self.add_brayton_cooling_states()
             consistent = True
             for i in range(0, len(transfers)):
-                if transfers[i][0] + deltaT > self.brayton.coolingStates.T[i] or self.brayton.coolingStates.h[i] <= 0:
+                if self.brayton.coolingStates.T[-1] == None or self.brayton.coolingStates.h[-1] <=0:
+                    # failed to converge because cryogenic temperature, mass rate is obviously way too low
+                    consistent = False
+                    break
+
+                elif transfers[i][0] + deltaT > self.brayton.coolingStates.T[i] or self.brayton.coolingStates.h[i] <= 0:
                     consistent = False
 
                 elif transfers[i][1] + deltaT > self.brayton.coolingStates.T[i+1]:
@@ -1764,6 +1784,10 @@ class CombinedBraytonRankineCycle:
         for part in transfers:
             self.transferredHeat += part[2]
         self.braytonFlowRate = m2
+
+
+    #def optimize_rankine_for_brayton(self, turbineExitQualities, feedwaterArgs=None):
+    #    self.rankine.rankine_optimize(self, turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=True)
 
     def ts_diagram(self, showExchangeLines=False):
         fig, (ax1, ax2) = plt.subplots(1, 2, sharey=True, gridspec_kw={'wspace': 0.05})
@@ -1928,12 +1952,14 @@ class CombinedBraytonRankineCycle:
 
 # Combined cycle optimization:
 
+
+# doesn't work, can't optimize brayton with constant regeneration
 def graph_combined_fuel_efficiency_vs_regenerator_heat(parentSystem, maxHeat, fuel, fuelCompressorEfficiency, maxFuelFrac, numPoints=10):
     heats = []
     efficiencies = []
     tasks = []
     for i in range(0, numPoints):
-        q = i * maxHeat / numPoints
+        q = i * maxHeat / (numPoints-1)
         system = parentSystem.copy()
         
         system.brayton.add_regeneration_blind(q)
@@ -1948,11 +1974,34 @@ def graph_combined_fuel_efficiency_vs_regenerator_heat(parentSystem, maxHeat, fu
     
     plt.figure()
     plt.xlabel("Regenerated Heat - $kJ kg^{-1}$")
-    plt.ylabel("Fuel Efficiency ($\\dot{w}_{out} / \\dot{m}_{fuel}$)")
+    plt.ylabel("Fuel Efficiency ($\\dot{w}_{net} / \\dot{m}_{fuel}$)")
     plt.scatter(heats, efficiencies)
     plt.show(block=False)
 
 
+def graph_combined_fuel_efficiency_vs_rankine_temperature(parentSystem, exchangerDeltaT, turbineExitQualities, feedwaterArgs=None, numPoints=10):
+    T1 = (parentSystem.rankine.preCompStates.T[0] + parentSystem.rankine.preTurbStates.T[0]) / 2 # don't cut more than half of heat exchange
+    T2 = parentSystem.rankine.preTurbStates.T[0]
+    temps = []
+    efficiencies = []
+    for i in range(0, numPoints):
+        T = T1 + (T2 - T1) * i / (numPoints-1)
+        system = parentSystem.copy()
+        system.rankine.preTurbStates.T[0] = T
+        system.rankine.rankine_optimize(turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=True)
+        if system.rankine.efficiency() <= 0:
+            print("skipping T =", T)
+            continue
+        system.adjust_brayton_flow_rate(exchangerDeltaT, showGraph=True)
+        temps.append(T)
+        efficiencies.append(system.fuel_efficiency())
+        print("T =", T, "   efficiency =", system.fuel_efficiency())
+
+    plt.figure()
+    plt.xlabel("Rankine Turbine Turbine Inlet Temperature - $K$")
+    plt.ylabel("Fuel Efficiency ($\\dot{w}_{net} / \\dot{m}_{fuel}$)")
+    plt.scatter(heats, efficiencies)
+    plt.show(block=False)
 
 
 
@@ -1978,7 +2027,7 @@ def graph_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEfficien
     fracs = []
     efficiencies = []
     for i in range(0, numPoints):
-        frac = minFrac + (maxFrac - minFrac) * i / numPoints
+        frac = minFrac + (maxFrac - minFrac) * i / (numPoints-1)
         cycle = copy.deepcopy(parentCycle)
         cycle.inject_fuel_after_compressor(Mixture([["CH4", 1]]), frac, fuelCompressorEfficiency)
         cycle.combust()
@@ -1995,7 +2044,7 @@ def graph_fuel_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEff
     fracs = []
     efficiencies = []
     for i in range(0, numPoints):
-        frac = minFrac + (maxFrac - minFrac) * i / numPoints
+        frac = minFrac + (maxFrac - minFrac) * i / (numPoints-1)
         cycle = copy.deepcopy(parentCycle)
         cycle.inject_fuel_after_compressor(Mixture([["CH4", 1]]), frac, fuelCompressorEfficiency)
         cycle.combust()
@@ -2004,7 +2053,7 @@ def graph_fuel_efficiency_vs_fuel_mass_frac(parentCycle, fuel, fuelCompressorEff
     
     plt.figure()
     plt.xlabel("Fuel Mass fraction")
-    plt.ylabel("Fuel Efficiency ($\\dot{w}_{out} / \\dot{m}_{fuel}$)")
+    plt.ylabel("Fuel Efficiency ($\\dot{w}_{net} / \\dot{m}_{fuel}$)")
     plt.scatter(fracs, efficiencies)
     plt.show(block=False)
 
@@ -2131,7 +2180,7 @@ def graph_fuel_efficiency_vs_combustion_pressure(parentCycle, fuel, fuelCompress
     tasks = []
 
     for i in range(0, numPoints):
-        P = minP + (maxP - minP) * i / numPoints
+        P = minP + (maxP - minP) * i / (numPoints-1)
         pressures.append(P)
         tasks.append([parentCycle, fuel, fuelCompressorEfficiency, maxFuelFrac, P, regeneratorDeltaT])
 
@@ -2140,7 +2189,7 @@ def graph_fuel_efficiency_vs_combustion_pressure(parentCycle, fuel, fuelCompress
     
     plt.figure()
     plt.xlabel("Combustion Pressure - $Pa$")
-    plt.ylabel("Fuel Efficiency ($\\dot{w}_{out} / \\dot{m}_{fuel}$)")
+    plt.ylabel("Fuel Efficiency ($\\dot{w}_{net} / \\dot{m}_{fuel}$)")
     plt.scatter(pressures, efficiencies)
     plt.show(block=False)
 
@@ -2161,7 +2210,7 @@ def graph_fuel_efficiency_vs_intercooler_pressure(parentCycle, compressorIndex, 
     efficiencies = []
     tasks = []
     for i in range(0, numPoints):
-        P = minP + (maxP - minP) * i / numPoints
+        P = minP + (maxP - minP) * i / (numPoints-1)
         pressures.append(P)
         tasks.append([parentCycle, compressorIndex, P, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT])
         if regeneratorDeltaT != None:
@@ -2249,7 +2298,7 @@ def graph_efficiency_vs_feedwater_pressure(parentCycle, tempDiff, turbineIndex, 
     pressures = []
     efficiencies = []
     for i in range(0, numPoints):
-        P = minP + (maxP - minP) * i / numPoints
+        P = minP + (maxP - minP) * i / (numPoints-1)
         cycle = parentCycle.copy()
         cycle.postTurbStates.P[turbineIndex] = P
         cycle.set_closed_feedwater_heater_from_temp_diff(tempDiff, turbineIndex, removeReheater=removeReheater)
@@ -2380,7 +2429,7 @@ def graph_turbine_inlet_temp_vs_optimized_rankine_efficiency(parentCycle, turbin
     temperatures = []
     efficiencies = []
     for i in range(0, numPoints):
-        T = minT + (maxT - minT) * i / numPoints
+        T = minT + (maxT - minT) * i / (numPoints-1)
         cycle = parentCycle.copy()
         cycle.preTurbStates.T[turbineIndex] = T
         cycle.rankine_optimize_no_temp_changes(turbineExitQualities, closedFeedwaterTempDiff=closedFeedwaterTempDiff, closedFeedwaterIndex=closedFeedwaterIndex)
@@ -2451,7 +2500,7 @@ def rankine_optimize_turbine_inlet_temperature(parentCycle, turbineIndex, turbin
     return T2 # use upper bound, not average to avoid risk of ending up just under required quality
 
 
-def graph_turbine_exit_quality_vs_boiler_pressure(parentCycle, turbineExitQualities, numPoints, feedwaterArgs=None):
+def graph_turbine_exit_quality_vs_boiler_pressure(parentCycle, turbineExitQualities, numPoints, feedwaterArgs=None, skipTempOpt=False):
     P2 = cp.PropsSI(parentCycle.postCompStates.fluid[-1].to_coolprop(), "pcrit") - 20
     solvedParent = parentCycle.copy()
     solvedParent.solve_cp()
@@ -2463,11 +2512,11 @@ def graph_turbine_exit_quality_vs_boiler_pressure(parentCycle, turbineExitQualit
     qualities = []
 
     for i in range(0, numPoints):
-        P = P1 + (P2 - P1) * i / numPoints
+        P = P1 + (P2 - P1) * i / (numPoints-1)
         cycle = parentCycle.copy()
         cycle.postCompStates.P[-1] = P
         cycle.propagate_assuming_no_pressure_losses()
-        cycle.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        cycle.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
         quality = cycle.postTurbStates.X[-1]
         
         if quality == -1:
@@ -2483,7 +2532,7 @@ def graph_turbine_exit_quality_vs_boiler_pressure(parentCycle, turbineExitQualit
     plt.show(block=False)
     
 
-def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwaterArgs=None, showGraph=False):
+def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwaterArgs=None, skipTempOpt=False, showGraph=False):
     if showGraph:
         plt.figure()
         plt.xlabel("iteration")
@@ -2507,7 +2556,7 @@ def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwate
         cycle = parentCycle.copy()
         cycle.postCompStates.P[-1] = P2
         cycle.propagate_assuming_no_pressure_losses()
-        cycle.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        cycle.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
         quality = cycle.postTurbStates.X[-1]
         
         if quality == -1:
@@ -2529,7 +2578,7 @@ def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwate
         cycle = parentCycle.copy()
         cycle.postCompStates.P[-1] = P
         cycle.propagate_assuming_no_pressure_losses()
-        cycle.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs)
+        cycle.rankine_optimize_fixed_compression(turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
         quality = cycle.postTurbStates.X[-1]
         if quality == -1:
             quality = 1.1
@@ -2550,9 +2599,9 @@ def rankine_optimize_boiler_pressure(parentCycle, turbineExitQualities, feedwate
     return P1  # use lower bound, not average to avoid risk of ending up just under required quality
 
 
-def rankine_fixed_quality_efficiency_worker(cycle, quality, feedwaterArgs):
+def rankine_fixed_quality_efficiency_worker(cycle, quality, feedwaterArgs, skipTempOpt):
     try:
-        cycle.rankine_optimize_fixed_target_quality(quality, feedwaterArgs=feedwaterArgs)
+        cycle.rankine_optimize_fixed_target_quality(quality, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
         return cycle.efficiency()
     except:
         return 0
@@ -2562,8 +2611,8 @@ def graph_efficiency_vs_target_quality(parentCycle, minQuality, numPoints, feedw
     tasks = []
     qualities = []
     for i in range(0, numPoints):
-        X = minQuality + (1 - minQuality) * i / numPoints
-        tasks.append([parentCycle.copy(), X, feedwaterArgs])
+        X = minQuality + (1 - minQuality) * i / (numPoints-1)
+        tasks.append([parentCycle.copy(), X, feedwaterArgs, skipTempOpt])
         qualities.append(X)
     with multiprocessing.Pool(processes=3) as pool:
         efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
@@ -2577,9 +2626,7 @@ def graph_efficiency_vs_target_quality(parentCycle, minQuality, numPoints, feedw
 
 
 
-# will have to look more into this, I don't think the newton-raphson is working
-# might have local peaks or something:
-def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterArgs=None):
+def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterArgs=None, skipTempOpt=False):
     interval = 0.001
     cycle1 = parentCycle.copy()
     cycle2 = parentCycle.copy()
@@ -2589,7 +2636,7 @@ def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterAr
         quality -= excess / 2
         interval -= excess
 
-    tasks = [[cycle1, quality - interval / 2, feedwaterArgs], [cycle2, quality + interval / 2, feedwaterArgs]]
+    tasks = [[cycle1, quality - interval / 2, feedwaterArgs, skipTempOpt], [cycle2, quality + interval / 2, feedwaterArgs, skipTempOpt]]
     
     with multiprocessing.Pool(processes=2) as pool:
         efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
@@ -2597,7 +2644,7 @@ def rankine_target_quality_efficiency_gradient(parentCycle, quality, feedwaterAr
     return (efficiencies[1] - efficiencies[0]) / 2
     
 
-def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwaterArgs=None):
+def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwaterArgs=None, skipTempOpt=False):
     # starts with minimum quality for avoiding damaging blades, and tries to see if increasing quality will increase efficiency
 
 
@@ -2607,10 +2654,10 @@ def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwater
     cycle3 = parentCycle.copy()
     cycle4 = parentCycle.copy()
 
-    tasks = [[cycle1, turbineExitQualities, feedwaterArgs],
-             [cycle2, turbineExitQualities + 0.001, feedwaterArgs],
-             [cycle3, 0.999, feedwaterArgs],
-             [cycle4, 1, feedwaterArgs]]
+    tasks = [[cycle1, turbineExitQualities, feedwaterArgs, skipTempOpt],
+             [cycle2, turbineExitQualities + 0.001, feedwaterArgs, skipTempOpt],
+             [cycle3, 0.999, feedwaterArgs, skipTempOpt],
+             [cycle4, 1, feedwaterArgs, skipTempOpt]]
 
     with multiprocessing.Pool(processes=4) as pool:
         efficiencies = pool.starmap(rankine_fixed_quality_efficiency_worker, tasks)
@@ -2625,7 +2672,7 @@ def rankine_optimize_target_quality(parentCycle, turbineExitQualities, feedwater
     X2 = 1
     while X2 - X1 > 0.005:
         X = (X1 + X2) / 2
-        grad = rankine_target_quality_efficiency_gradient(parentCycle, X, feedwaterArgs=feedwaterArgs)
+        grad = rankine_target_quality_efficiency_gradient(parentCycle, X, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
         
         if grad > 0:
             X1 = X
