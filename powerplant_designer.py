@@ -1014,9 +1014,9 @@ class Cycle: # should be valid for both rankine and brayton
         for i in range(0, len(self.preTurbStates.P)):
             if self.preTurbStates.T[i] != None:
                 if feedwaterArgs == None:
-                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
+                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs)
                 elif self.preTurbStates.T[i] != feedwaterArgs[1]:
-                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs, skipTempOpt=skipTempOpt)
+                    self.preTurbStates.T[i] = rankine_optimize_turbine_inlet_temperature(self, i, turbineExitQualities, feedwaterArgs=feedwaterArgs)
         
         self.rankine_optimize_no_temp_changes(turbineExitQualities, feedwaterArgs=feedwaterArgs)
 
@@ -1047,7 +1047,7 @@ class Cycle: # should be valid for both rankine and brayton
 
 
 
-    def brayton_optimize_fixed_pressure(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
+    def brayton_optimize_fixed_intercoolers(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
         # warning - takes approx 1 hour to run if using a regenerator
         frac = optimize_fuel_mass_frac(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
         
@@ -1058,7 +1058,7 @@ class Cycle: # should be valid for both rankine and brayton
         self.inject_fuel_after_compressor(fuel, frac, fuelCompressorEfficiency)
         self.combust()
 
-    def brayton_optimize(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
+    def brayton_optimize_fixed_pressure(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
         # If multiple intercoolers, only 1 intercooler can be optimized, and others must have predetermined pressure
 
         for i in range(0, len(self.postCompStates.P) - 1):
@@ -1067,6 +1067,14 @@ class Cycle: # should be valid for both rankine and brayton
                 self.postCompStates.P[i] = P
                 self.preCompStates.P[i+1] = P
 
+        self.brayton_optimize_fixed_intercoolers(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+
+    def brayton_optimize(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None):
+        if self.postCompStates.P[-1] == None and self.preTurbStates.T[0] != None:
+            P = optimize_brayton_pressure_for_turbine_temp(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT, showGraph=True)
+            self.postCompStates.P[-1] = P
+            self.preTurbStates.T[0] = None
+        
         self.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
 
 
@@ -1169,14 +1177,14 @@ class Cycle: # should be valid for both rankine and brayton
         try:
             return self.w_out() - self.w_in()
         except:
-            print("ERROR calculating net work")
+            #print("ERROR calculating net work")
             return 0
 
     def efficiency(self):
         try:
             return self.w_net() / (self.q_in() - self.recycledHeat)
         except:
-            print("ERROR calculating efficiency")
+            #print("ERROR calculating efficiency")
             return 0
 
     def back_work(self):
@@ -1398,7 +1406,12 @@ class Cycle: # should be valid for both rankine and brayton
         return feedwaterStates
 
     
-    def closed_feedwater_ts(self, ax):
+    def closed_feedwater_ts(self, ax, label=""):
+        if label == "":
+            label = "Closed Feedwater Heater"
+        else:
+            label += " - Closed Feedwater Heater"
+            
         feedwaterStates = self.get_closed_feedwater_states()
         feedwaterStates.solve_points()
         intermediates = SetOfStates(3, feedwaterStates.fluid[0])
@@ -1406,7 +1419,7 @@ class Cycle: # should be valid for both rankine and brayton
         intermediates.extend(get_intermediate_points(feedwaterStates, 1, feedwaterStates, 2, ["h", "P"], numPoints=5))
 
         ax.scatter(feedwaterStates.s, feedwaterStates.T, marker="o", s=STATE_POINT_SIZE)
-        ax.plot(intermediates.s, intermediates.T, marker=".")
+        ax.plot(intermediates.s, intermediates.T, marker=".", label=label)
         for i in range(1, len(feedwaterStates.s)):
             ax.text(feedwaterStates.s[i], feedwaterStates.T[i], str(i-1 + len(self.combined_states().T)), fontsize=20)
         
@@ -1467,7 +1480,9 @@ class Cycle: # should be valid for both rankine and brayton
             ax.plot(self.fuelIntermediates.s, self.fuelIntermediates.T, marker=".", label=label)
 
         if self.closedFeedwaterTurbineIndex != None:
-            self.closed_feedwater_ts(ax)
+            if label == None:
+                label = ""
+            self.closed_feedwater_ts(ax, label)
         
         if label != None:
             ax.legend()
@@ -1980,7 +1995,7 @@ def graph_combined_fuel_efficiency_vs_regenerator_heat(parentSystem, maxHeat, fu
 
 
 def graph_combined_fuel_efficiency_vs_rankine_temperature(parentSystem, exchangerDeltaT, turbineExitQualities, feedwaterArgs=None, numPoints=10):
-    T1 = (parentSystem.rankine.preCompStates.T[0] + parentSystem.rankine.preTurbStates.T[0]) / 2 # don't cut more than half of heat exchange
+    T1 = (parentSystem.rankine.preCompStates.T[0] + 2 * parentSystem.rankine.preTurbStates.T[0]) / 3
     T2 = parentSystem.rankine.preTurbStates.T[0]
     temps = []
     efficiencies = []
@@ -1992,7 +2007,7 @@ def graph_combined_fuel_efficiency_vs_rankine_temperature(parentSystem, exchange
         if system.rankine.efficiency() <= 0:
             print("skipping T =", T)
             continue
-        system.adjust_brayton_flow_rate(exchangerDeltaT, showGraph=True)
+        system.adjust_brayton_flow_rate(exchangerDeltaT)
         temps.append(T)
         efficiencies.append(system.fuel_efficiency())
         print("T =", T, "   efficiency =", system.fuel_efficiency())
@@ -2000,7 +2015,7 @@ def graph_combined_fuel_efficiency_vs_rankine_temperature(parentSystem, exchange
     plt.figure()
     plt.xlabel("Rankine Turbine Turbine Inlet Temperature - $K$")
     plt.ylabel("Fuel Efficiency ($\\dot{w}_{net} / \\dot{m}_{fuel}$)")
-    plt.scatter(heats, efficiencies)
+    plt.scatter(temps, efficiencies)
     plt.show(block=False)
 
 
@@ -2172,7 +2187,7 @@ def get_optimized_fuel_efficiency_at_pressure(parentCycle, fuel, fuelCompressorE
     cycle = parentCycle.copy()
     cycle.postCompStates.P[-1] = combustionPressure
     cycle.propagate_assuming_no_pressure_losses()
-    cycle.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+    cycle.brayton_optimize_fixed_intercoolers(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
     return cycle.fuel_efficiency()
 
 def graph_fuel_efficiency_vs_combustion_pressure(parentCycle, fuel, fuelCompressorEfficiency, maxFuelFrac, minP, maxP, regeneratorDeltaT=None, numPoints=12):
@@ -2198,7 +2213,7 @@ def get_optimized_fuel_efficiency_at_intercooler_pressure(parentCycle, compresso
     cycle.postCompStates.P[compressorIndex] = intercoolerPressure
     cycle.preCompStates.P[compressorIndex + 1] = intercoolerPressure
     cycle.solve_cp()
-    cycle.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+    cycle.brayton_optimize_fixed_intercoolers(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
     return cycle.fuel_efficiency()
 
 def graph_fuel_efficiency_vs_intercooler_pressure(parentCycle, compressorIndex, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None, numPoints=10):
@@ -2275,6 +2290,68 @@ def optimize_intercooler_pressure(parentCycle, compressorIndex, fuel, fuelCompre
             plt.pause(0.5)
 
     return (P1 + P2) / 2
+
+
+def optimize_brayton_pressure_for_turbine_temp(parentCycle, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=None, showGraph=False):
+    if showGraph:
+        plt.figure()
+        plt.xlabel("iteration")
+        plt.ylabel("Pressure - $J kg^{-1}_{air}$")
+        plt.title("Compressor Pressure for Turbine Temperature Convergence")
+
+    targetT = parentCycle.preTurbStates.T[0]
+    i = 0
+    tolerance = 1
+    P1 = parentCycle.preCompStates.P[0] + 10
+    P2 = P1 * 2
+    expanded = False
+    while not expanded:
+        cycle = parentCycle.copy()
+        cycle.preTurbStates.T[0] = None
+        cycle.postCompStates.P[-1] = P2
+        cycle.propagate_assuming_no_pressure_losses()
+        cycle.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+
+        if cycle.preTurbStates.T[0] > targetT:
+            expanded = True
+        elif cycle.preTurbStates.T[0] < targetT:
+            P1 = P2
+            P2 = P2 * 1.5
+        else:
+            return P2
+
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [P1, P2])
+            plt.show(block=False)
+            plt.pause(0.5)
+
+
+    while P2 - P1 > tolerance:
+        P = (P1 + P2) / 2
+        cycle = parentCycle.copy()
+        cycle.preTurbStates.T[0] = None
+        cycle.postCompStates.P[-1] = P
+        cycle.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
+        
+        if cycle.preTurbStates.T[0] > targetT:
+            P2 = P
+        elif cycle.preTurbStates.T[0] < targetT:
+            P1 = P
+        else:
+            return P
+
+        if showGraph:
+            i += 1
+            plt.plot([i, i], [P1, P2])
+            plt.show(block=False)
+            plt.pause(0.5)
+
+    return P1
+
+
+
+
 
 
 
