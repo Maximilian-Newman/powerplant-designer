@@ -1074,6 +1074,7 @@ class Cycle: # should be valid for both rankine and brayton
             P = optimize_brayton_pressure_for_turbine_temp(self, fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT, showGraph=True)
             self.postCompStates.P[-1] = P
             self.preTurbStates.T[0] = None
+            self.propagate_assuming_no_pressure_losses()
         
         self.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
 
@@ -1994,9 +1995,12 @@ def graph_combined_fuel_efficiency_vs_regenerator_heat(parentSystem, maxHeat, fu
     plt.show(block=False)
 
 
-def graph_combined_fuel_efficiency_vs_rankine_temperature(parentSystem, exchangerDeltaT, turbineExitQualities, feedwaterArgs=None, numPoints=10):
-    T1 = (parentSystem.rankine.preCompStates.T[0] + 2 * parentSystem.rankine.preTurbStates.T[0]) / 3
-    T2 = parentSystem.rankine.preTurbStates.T[0]
+def graph_combined_fuel_efficiency_vs_rankine_temperature(parentSystem, exchangerDeltaT, turbineExitQualities, feedwaterArgs=None, numPoints=10, T1=None, T2=None):
+    if T1 == None:
+        T1 = (parentSystem.rankine.preCompStates.T[0] + parentSystem.rankine.preTurbStates.T[0]) / 2
+    if T2 == None:
+        T2 = parentSystem.rankine.preTurbStates.T[0]
+    
     temps = []
     efficiencies = []
     for i in range(0, numPoints):
@@ -2301,7 +2305,7 @@ def optimize_brayton_pressure_for_turbine_temp(parentCycle, fuel, fuelCompressor
 
     targetT = parentCycle.preTurbStates.T[0]
     i = 0
-    tolerance = 1
+    tolerance = 0.5
     P1 = parentCycle.preCompStates.P[0] + 10
     P2 = P1 * 2
     expanded = False
@@ -2332,6 +2336,7 @@ def optimize_brayton_pressure_for_turbine_temp(parentCycle, fuel, fuelCompressor
         cycle = parentCycle.copy()
         cycle.preTurbStates.T[0] = None
         cycle.postCompStates.P[-1] = P
+        cycle.propagate_assuming_no_pressure_losses()
         cycle.brayton_optimize_fixed_pressure(fuel, fuelCompressorEfficiency, maxFuelFrac, regeneratorDeltaT=regeneratorDeltaT)
         
         if cycle.preTurbStates.T[0] > targetT:
@@ -2348,6 +2353,17 @@ def optimize_brayton_pressure_for_turbine_temp(parentCycle, fuel, fuelCompressor
             plt.pause(0.5)
 
     return P1
+
+
+
+
+
+
+
+
+
+
+
 
 
 
